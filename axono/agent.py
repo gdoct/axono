@@ -1,5 +1,5 @@
 import os
-import subprocess
+import subprocess  # nosec B404 -- intentional: bash tool requires subprocess
 import sys
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -77,8 +77,8 @@ async def bash(command: str, unsafe: bool = False) -> str:
                     f"Reason: {reason}\n"
                     f"Command: {command}"
                 )
-        except Exception:
-            pass  # If the safety check itself fails, proceed with execution
+        except Exception as exc:
+            print(f"Warning: safety check failed: {exc}", file=sys.stderr)
     cmd = command.strip()
     cwd = _CURRENT_DIR
     if cmd.startswith("cd "):
@@ -101,7 +101,7 @@ async def bash(command: str, unsafe: bool = False) -> str:
     try:
         if not cmd:
             return f"__CWD__:{_CURRENT_DIR}"
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B602 -- intentional: user-facing shell tool, guarded by LLM safety judge
             cmd,
             shell=True,
             capture_output=True,

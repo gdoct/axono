@@ -7,6 +7,7 @@ Also keeps the ``_verify_connection`` helper available for direct use.
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from textual import work
@@ -27,6 +28,9 @@ def _verify_connection(base_url: str, api_key: str) -> tuple[bool, str]:
     Returns ``(ok, message)``.
     """
     url = base_url.rstrip("/") + "/models"
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False, f"Unsupported URL scheme: {parsed.scheme!r}. Use http or https."
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:

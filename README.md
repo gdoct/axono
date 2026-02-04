@@ -1,8 +1,8 @@
 # Axono
 
-[![CI](https://github.com/YOUR_USERNAME/axono/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/axono/actions/workflows/ci.yml)
-[![Code Coverage](https://codecov.io/gh/YOUR_USERNAME/axono/branch/main/graph/badge.svg)](https://codecov.io/gh/YOUR_USERNAME/axono)
-[![CodeQL](https://github.com/YOUR_USERNAME/axono/actions/workflows/codeql.yml/badge.svg)](https://github.com/YOUR_USERNAME/axono/actions/workflows/codeql.yml)
+[![CI](https://github.com/gdoct/axono/actions/workflows/ci.yml/badge.svg)](https://github.com/gdoct/axono/actions/workflows/ci.yml)
+[![Code Coverage](https://codecov.io/gh/gdoct/axono/branch/main/graph/badge.svg)](https://codecov.io/gh/gdoct/axono)
+[![CodeQL](https://github.com/gdoct/axono/actions/workflows/codeql.yml/badge.svg)](https://github.com/gdoct/axono/actions/workflows/codeql.yml)
 
 Axono is your private, fully local AI coding companion. It lives in your terminal and connects to the Large Language Models (LLMs) running on your own machine (via [LM Studio](https://lmstudio.ai/)).
 

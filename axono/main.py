@@ -1,0 +1,188 @@
+import argparse
+from pathlib import Path
+
+from langchain_core.messages import HumanMessage
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import Footer, Input
+
+from axono.agent import build_agent, run_agent
+from axono.config import needs_onboarding
+from axono.onboarding import OnboardingScreen
+from axono.ui import (
+    AssistantMessage,
+    Banner,
+    ChatContainer,
+    CwdStatus,
+    SystemMessage,
+    UserMessage,
+)
+
+
+class AxonoApp(App):
+    """Personal AI Assistant TUI Application."""
+
+    TITLE = "Axono"
+
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("ctrl+l", "clear", "Clear", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    Screen {
+        layout: vertical;
+    }
+
+    #chat-container {
+        height: 1fr;
+    }
+
+    #input-area {
+        dock: bottom;
+        height: auto;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, force_onboard: bool = False) -> None:
+        super().__init__()
+        self.agent_graph = None
+        self.message_history: list = []
+        self._is_processing = False
+        self._cwd = str(Path.home())
+        self._force_onboard = force_onboard
+
+    def compose(self) -> ComposeResult:
+        yield ChatContainer(Banner(), id="chat-container")
+        yield CwdStatus(id="cwd-status")
+        yield Input(placeholder="Type a message...", id="input-area")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        self.query_one("#input-area", Input).focus()
+        self.query_one("#cwd-status", CwdStatus).update_path(self._cwd)
+        if self._force_onboard or needs_onboarding():
+            self.push_screen(OnboardingScreen(), callback=self._on_onboarding_done)
+        else:
+            self.run_worker(
+                self._initialize_agent(), name="init-agent", exclusive=True
+            )
+
+    def _on_onboarding_done(self, saved: bool | None) -> None:
+        """Called when the onboarding screen is dismissed."""
+        self.run_worker(
+            self._initialize_agent(), name="init-agent", exclusive=True
+        )
+
+    def _parse_agent_data(self, content) -> str:
+        if content is None:
+            return ""
+        return str(content)
+
+    async def _initialize_agent(self) -> None:
+        chat = self.query_one("#chat-container", ChatContainer)
+        try:
+            statuses = []
+            self.agent_graph = await build_agent(on_status=statuses.append)
+            await chat.add_message(SystemMessage("Agent initialized. Ready to chat!"))
+            for s in statuses:
+                await chat.add_message(SystemMessage(s, prefix="MCP"))
+        except Exception as e:
+            await chat.add_message(
+                SystemMessage(f"Failed to initialize agent: {e}", prefix="Error")
+            )
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        user_text = event.value.strip()
+        if not user_text:
+            return
+        if self._is_processing:
+            self.notify("Please wait for the current response...", severity="warning")
+            return
+
+        event.input.value = ""
+
+        chat = self.query_one("#chat-container", ChatContainer)
+        await chat.add_message(UserMessage(user_text))
+
+        self.message_history.append(HumanMessage(content=user_text))
+
+        self._is_processing = True
+        self.run_worker(
+            self._process_message(),
+            name="agent-response",
+            exclusive=True,
+            group="agent",
+        )
+
+    async def _process_message(self) -> None:
+        chat = self.query_one("#chat-container", ChatContainer)
+        cwd_status = self.query_one("#cwd-status", CwdStatus)
+
+        try:
+            if self.agent_graph is None:
+                await chat.add_message(
+                    SystemMessage("Agent not initialized yet.", prefix="Error")
+                )
+                return
+
+            async for event_type, data in run_agent(
+                self.agent_graph, self.message_history
+            ):
+                if event_type == "messages":
+                    self.message_history = list(data)
+                    continue
+                message_text = self._parse_agent_data(data)
+                if event_type == "assistant":
+                    await chat.add_message(AssistantMessage(message_text))
+                elif event_type == "tool_call":
+                    await chat.add_tool_group(f"Tool: {message_text}")
+                elif event_type == "tool_result":
+                    output = message_text
+                    if "__CWD__:" in output:
+                        lines = output.splitlines()
+                        remaining: list[str] = []
+                        for line in lines:
+                            if line.startswith("__CWD__:"):
+                                self._cwd = line.split("__CWD__:", 1)[1].strip()
+                                cwd_status.update_path(self._cwd)
+                            else:
+                                remaining.append(line)
+                        output = "\n".join(remaining).strip()
+                    if output:
+                        await chat.append_to_tool_group(
+                            SystemMessage(output, prefix="Output"),
+                        )
+                elif event_type == "error":
+                    await chat.add_message(SystemMessage(message_text, prefix="Error"))
+
+        except Exception as e:
+            await chat.add_message(
+                SystemMessage(f"Unexpected error: {e}", prefix="Error")
+            )
+        finally:
+            self._is_processing = False
+
+    def action_clear(self) -> None:
+        chat = self.query_one("#chat-container", ChatContainer)
+        chat.remove_children()
+        self.message_history = []
+        self.notify("Chat cleared")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Axono – terminal AI assistant")
+    parser.add_argument(
+        "--onboard",
+        action="store_true",
+        help="Run the onboarding wizard (re-configure LM Studio settings)",
+    )
+    args = parser.parse_args()
+
+    app = AxonoApp(force_onboard=args.onboard)
+    app.run()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

@@ -1,0 +1,5 @@
+textual
+langchain==1.2.8
+langchain-openai
+langchain-mcp-adapters
+python-dotenv

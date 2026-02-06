@@ -98,7 +98,7 @@ async def bash(command: str, unsafe: bool = False) -> str:
         # Use asyncio.to_thread to avoid blocking the event loop
         result = await asyncio.to_thread(
             partial(
-                subprocess.run,  # nosec B602 -- intentional: user-facing shell tool, guarded by LLM safety judge
+                subprocess.run,  # nosec B602 B604 -- intentional: user-facing shell tool, guarded by LLM safety judge
                 exec_cmd,
                 shell=True,
                 capture_output=True,

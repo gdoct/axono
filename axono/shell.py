@@ -125,7 +125,7 @@ async def _run_command(cmd: str, cwd: str, unsafe: bool = False) -> StepResult:
         # Use asyncio.to_thread to avoid blocking the event loop
         result = await asyncio.to_thread(
             partial(
-                subprocess.run,  # nosec B602
+                subprocess.run,  # nosec B602 B604 -- intentional shell execution for coding assistant
                 cmd,
                 shell=True,
                 capture_output=True,

@@ -35,7 +35,7 @@ It's designed to bring agentic AI capabilities to "normal" hardware. You don't n
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/axono.git
+git clone https://github.com/gdoct/axono.git
 cd axono
 
 # Create virtual environment and install dependencies
@@ -47,6 +47,7 @@ uv pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your settings
 ```
+<img width="1309" height="577" alt="image" src="https://github.com/user-attachments/assets/9fd0ecbb-ab3d-47d1-a831-97c4e68519ea" />
 
 ## Usage
 

@@ -33,7 +33,8 @@ def _verify_connection(base_url: str, api_key: str) -> tuple[bool, str]:
         return False, f"Unsupported URL scheme: {parsed.scheme!r}. Use http or https."
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        # Scheme validated above - only http/https allowed
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             data = json.loads(resp.read().decode())
             models = data.get("data", [])
             if models:

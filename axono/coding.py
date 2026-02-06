@@ -1,8 +1,17 @@
-"""Multi-stage coding pipeline: Investigate -> Plan -> Generate -> Apply -> Validate.
+"""Iterative coding pipeline: Plan one action -> Execute -> Observe -> Repeat.
 
-This module implements a five-stage pipeline that enables the agent to
-read, understand, generate, and apply code changes to local files.
-Each stage is a focused LLM call with its own system prompt.
+This module implements an adaptive coding pipeline. Instead of following a
+fixed sequence of stages, the LLM decides which action to take next based
+on the current state (files read, changes made, validation results, etc.).
+
+Available actions:
+- investigate: Scan project to find relevant files
+- read_files: Read specific files into context
+- plan: Create a coding plan for what changes to make
+- generate: Generate code based on the plan
+- write: Write generated patches to disk
+- validate: Validate the changes
+- done: Task complete
 """
 
 import json
@@ -10,11 +19,12 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from axono import config
+from axono.pipeline import get_llm, coerce_response_text, parse_json, truncate
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -77,16 +87,6 @@ class InvestigationResult:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_llm():  # pragma: no cover
-    """Build an LLM instance using centralised config."""
-    return init_chat_model(
-        model=config.LLM_MODEL_NAME,
-        model_provider=config.LLM_MODEL_PROVIDER,
-        base_url=config.LLM_BASE_URL,
-        api_key=config.LLM_API_KEY,
-    )
 
 
 def _scan_directory(directory: str, max_depth: int = 3) -> list[str]:
@@ -231,14 +231,6 @@ def _total_chars(files: list[FileContent]) -> int:
     return sum(len(fc.content) for fc in files)
 
 
-def _coerce_response_text(content) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, list):
-        return json.dumps(content)
-    return str(content)
-
-
 # ---------------------------------------------------------------------------
 # Stage 0 – Investigation
 # ---------------------------------------------------------------------------
@@ -371,7 +363,7 @@ async def plan(
 
     Returns the plan and the file contents that were gathered.
     """
-    llm = _get_llm()
+    llm = get_llm()
     files_block = "\n\n".join(
         f"### {fc.path}\n```\n{fc.content}\n```" for fc in initial_files
     )
@@ -387,20 +379,11 @@ async def plan(
         HumanMessage(content=user_prompt),
     ]
     response = await llm.ainvoke(messages)
-    raw = _coerce_response_text(response.content).strip()
+    raw = coerce_response_text(response.content).strip()
 
     # Parse the JSON plan, tolerating markdown fences
-    json_text = raw
-    if json_text.startswith("```"):
-        # Remove opening fence (possibly ```json)
-        json_text = json_text.split("\n", 1)[1] if "\n" in json_text else json_text[3:]
-    if json_text.endswith("```"):
-        json_text = json_text[:-3]
-    json_text = json_text.strip()
-
-    try:
-        data = json.loads(json_text)
-    except json.JSONDecodeError:
+    data = parse_json(raw)
+    if data is None:
         # Fallback: treat entire response as summary
         data = {"summary": raw, "files_to_read": [], "patches": []}
 
@@ -472,7 +455,7 @@ async def generate(
     file_contents: list[FileContent],
 ) -> GeneratedCode:
     """Stage 2: Generate code based on the plan and file context."""
-    llm = _get_llm()
+    llm = get_llm()
 
     files_block = "\n\n".join(
         f"### {fc.path}\n```\n{fc.content}\n```" for fc in file_contents
@@ -491,20 +474,16 @@ async def generate(
         HumanMessage(content=user_prompt),
     ]
     response = await llm.ainvoke(messages)
-    raw = _coerce_response_text(response.content).strip()
+    raw = coerce_response_text(response.content).strip()
 
     # Parse JSON, tolerating markdown fences
-    json_text = raw
-    if json_text.startswith("```"):
-        json_text = json_text.split("\n", 1)[1] if "\n" in json_text else json_text[3:]
-    if json_text.endswith("```"):
-        json_text = json_text[:-3]
-    json_text = json_text.strip()
-
-    try:
-        items = json.loads(json_text)
-    except json.JSONDecodeError:
+    items = parse_json(raw)
+    if items is None:
         return GeneratedCode(explanation=f"Failed to parse generator output:\n{raw}")
+
+    # Ensure items is a list
+    if not isinstance(items, list):
+        return GeneratedCode(explanation=f"Expected JSON array, got:\n{raw}")
 
     seen_paths: set[str] = set()
     duplicate_paths: list[str] = []
@@ -589,7 +568,7 @@ async def validate(
     generated: GeneratedCode,
 ) -> ValidationResult:
     """Stage 4: Validate the generated code."""
-    llm = _get_llm()
+    llm = get_llm()
 
     files_block = "\n\n".join(
         f"### {p.path}\n```\n{p.content}\n```" for p in generated.patches
@@ -606,18 +585,10 @@ async def validate(
         HumanMessage(content=user_prompt),
     ]
     response = await llm.ainvoke(messages)
-    raw = _coerce_response_text(response.content).strip()
+    raw = coerce_response_text(response.content).strip()
 
-    json_text = raw
-    if json_text.startswith("```"):
-        json_text = json_text.split("\n", 1)[1] if "\n" in json_text else json_text[3:]
-    if json_text.endswith("```"):
-        json_text = json_text[:-3]
-    json_text = json_text.strip()
-
-    try:
-        data = json.loads(json_text)
-    except json.JSONDecodeError:
+    data = parse_json(raw)
+    if data is None:
         return ValidationResult(ok=True, summary=raw)
 
     return ValidationResult(
@@ -628,108 +599,333 @@ async def validate(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator – runs the full pipeline
+# Iterative Planner
+# ---------------------------------------------------------------------------
+
+ITERATIVE_PLANNER_SYSTEM = """\
+You are a coding agent that decides what action to take next.
+
+Available actions:
+- {"action": "investigate", "reason": "..."} - Scan project to find relevant files
+- {"action": "read_files", "files": ["path1", "path2"], "reason": "..."} - Read specific files
+- {"action": "plan", "reason": "..."} - Create a detailed coding plan
+- {"action": "generate", "reason": "..."} - Generate code based on the plan
+- {"action": "write", "reason": "..."} - Write generated patches to disk
+- {"action": "validate", "reason": "..."} - Validate the changes
+- {"done": true, "summary": "..."} - Task complete
+
+RULES:
+- Take ONE action at a time
+- After writing files, ALWAYS validate
+- If validation fails, you can re-generate and re-write
+- Respond ONLY with JSON
+"""
+
+
+def _build_iterative_prompt(
+    task: str,
+    cwd: str,
+    history: list[dict],
+    state: dict[str, Any],
+) -> str:
+    """Build the user prompt for the iterative planner."""
+    parts = [f"Goal: {task}", f"CWD: {cwd}"]
+
+    # Show available files if we have a directory listing
+    if "dir_listing" in state:
+        listing = state["dir_listing"][:30]  # First 30 files
+        parts.append(f"Project files: {', '.join(listing)}")
+        if len(state["dir_listing"]) > 30:
+            parts.append(f"  (+{len(state['dir_listing']) - 30} more)")
+
+    # Show files in context
+    if "files" in state and state["files"]:
+        file_paths = [fc.path for fc in state["files"]]
+        parts.append(f"Files in context: {', '.join(file_paths)}")
+
+    # Show current plan if we have one
+    if "coding_plan" in state:
+        plan_summary = state["coding_plan"].summary
+        parts.append(f"Current plan: {plan_summary}")
+
+    # Show generated patches if we have them
+    if "generated" in state and state["generated"].patches:
+        patch_paths = [p.path for p in state["generated"].patches]
+        parts.append(f"Generated patches: {', '.join(patch_paths)}")
+
+    # Show written files
+    if "written" in state and state["written"]:
+        parts.append(f"Written: {', '.join(state['written'])}")
+
+    # Show validation result if we have one
+    if "validation" in state:
+        val = state["validation"]
+        if val.ok:
+            parts.append(f"Validation: PASSED - {val.summary}")
+        else:
+            parts.append(f"Validation: FAILED - {val.summary}")
+            for issue in val.issues[:3]:
+                parts.append(f"  - {issue}")
+
+    # Show history (last 5 actions)
+    if history:
+        parts.append("\nRecent actions:")
+        for h in history[-5:]:
+            action = h.get("action", "unknown")
+            success = "✓" if h.get("success", False) else "✗"
+            reason = h.get("reason", "")
+            error = h.get("error", "")
+            line = f"  {success} {action}"
+            if reason:
+                line += f" - {truncate(reason, 50)}"
+            if error:
+                line += f" [error: {truncate(error, 50)}]"
+            parts.append(line)
+
+    return "\n".join(parts)
+
+
+async def _plan_next_action(
+    task: str,
+    cwd: str,
+    history: list[dict],
+    state: dict[str, Any],
+) -> dict:
+    """Plan the next action using the LLM."""
+    llm = get_llm()
+    user_prompt = _build_iterative_prompt(task, cwd, history, state)
+
+    messages = [
+        SystemMessage(content=ITERATIVE_PLANNER_SYSTEM),
+        HumanMessage(content=user_prompt),
+    ]
+
+    response = await llm.ainvoke(messages)
+    raw = coerce_response_text(response.content).strip()
+
+    data = parse_json(raw)
+    if data is None:
+        return {"done": True, "summary": "Could not parse response"}
+
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator – iterative pipeline
 # ---------------------------------------------------------------------------
 
 
 async def run_coding_pipeline(task: str, working_dir: str):
-    """Run the full Investigate -> Plan -> Generate -> Apply -> Validate pipeline.
+    """Run the iterative coding pipeline.
+
+    The LLM decides which action to take next based on the current state.
+    Actions: investigate, read_files, plan, generate, write, validate, done.
 
     Yields status tuples that the caller can use to display progress:
       ("status", str)   - progress updates
       ("result", str)   - final result summary
       ("error", str)    - if something went wrong
     """
+    # Initialize state
     dir_listing = _scan_directory(working_dir)
     seed_files = _read_seed_files(working_dir, dir_listing)
 
-    # Stage 0 – Investigation
-    yield ("status", "Investigating project context...")
-    try:
-        investigation = investigate(task, working_dir, dir_listing, seed_files)
-    except Exception as e:
-        yield ("error", f"Investigation failed: {e}")
-        return
+    state: dict[str, Any] = {
+        "dir_listing": dir_listing,
+        "files": list(seed_files),
+    }
+    history: list[dict] = []
+    max_steps = 15
 
-    yield ("status", investigation.summary)
-    if investigation.skipped:
-        yield (
-            "status",
-            "Investigation skipped: " + ", ".join(investigation.skipped[:10]),
-        )
+    for step_num in range(max_steps):
+        # Plan next action
+        try:
+            action_plan = await _plan_next_action(task, working_dir, history, state)
+        except Exception as e:
+            yield ("error", f"Planning failed: {e}")
+            return
 
-    # Stage 1 – Plan
-    yield ("status", "Planning: analysing project and creating a plan...")
-    try:
-        coding_plan, file_contents = await plan(
-            task,
-            working_dir,
-            dir_listing,
-            investigation.files,
-        )
-    except Exception as e:
-        yield ("error", f"Planning failed: {e}")
-        return
-    yield ("status", f"Plan: {coding_plan.summary}")
+        # Check if done
+        if action_plan.get("done"):
+            summary = action_plan.get("summary", "Done")
+            yield ("result", _build_final_summary(state, summary))
+            return
 
-    if not coding_plan.patches:
-        yield ("error", "Planner produced no file changes. Aborting.")
-        return
+        action = action_plan.get("action", "").strip()
+        reason = action_plan.get("reason", "")
 
-    # Stage 2 – Generate
-    yield ("status", "Generating code...")
-    try:
-        generated = await generate(coding_plan, file_contents)
-    except Exception as e:
-        yield ("error", f"Code generation failed: {e}")
-        return
+        if not action:
+            yield ("error", "No action provided")
+            return
 
-    if not generated.patches:
-        msg = generated.explanation or "Generator produced no file patches."
-        yield ("error", msg)
-        return
+        yield ("status", f"[{action}] {reason}" if reason else f"[{action}]")
 
-    yield (
-        "status",
-        "Generated patches for: " + ", ".join(p.path for p in generated.patches),
+        # Execute the action
+        try:
+            if action == "investigate":
+                result = _handle_investigate(task, working_dir, state)
+                history.append({"action": "investigate", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "read_files":
+                files_to_read = action_plan.get("files", [])
+                result = _handle_read_files(working_dir, files_to_read, state)
+                history.append({"action": "read_files", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "plan":
+                result = await _handle_plan(task, working_dir, state)
+                history.append({"action": "plan", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "generate":
+                result = await _handle_generate(state)
+                history.append({"action": "generate", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "write":
+                result = _handle_write(working_dir, state)
+                history.append({"action": "write", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "validate":
+                result = await _handle_validate(task, state)
+                history.append({"action": "validate", "success": True, "reason": reason})
+                yield ("status", result)
+
+            else:
+                yield ("error", f"Unknown action: {action}")
+                history.append({"action": action, "success": False, "error": "Unknown action"})
+
+        except Exception as e:
+            error_msg = f"{action} failed: {e}"
+            yield ("error", error_msg)
+            history.append({"action": action, "success": False, "error": str(e), "reason": reason})
+            # Continue to let the LLM decide what to do next
+
+    # Reached max steps
+    yield ("result", _build_final_summary(state, f"Stopped after {max_steps} steps"))
+
+
+# ---------------------------------------------------------------------------
+# Action handlers
+# ---------------------------------------------------------------------------
+
+
+def _handle_investigate(task: str, working_dir: str, state: dict[str, Any]) -> str:
+    """Handle the investigate action."""
+    investigation = investigate(
+        task,
+        working_dir,
+        state.get("dir_listing", []),
+        state.get("files", []),
     )
+    state["files"] = investigation.files
+    state["investigation"] = investigation
+    return investigation.summary
 
-    # Stage 3 – Apply
-    yield ("status", "Writing files to disk...")
-    try:
-        written = apply(generated, working_dir)
-    except Exception as e:
-        yield ("error", f"File write failed: {e}")
-        return
 
-    for line in written:
-        yield ("status", line)
+def _handle_read_files(
+    working_dir: str, files_to_read: list[str], state: dict[str, Any]
+) -> str:
+    """Handle the read_files action."""
+    current_files = state.get("files", [])
+    existing_paths = {fc.path for fc in current_files}
+    added = []
 
-    # Stage 4 – Validate
-    yield ("status", "Validating changes...")
-    try:
-        validation = await validate(task, coding_plan, generated)
-    except Exception as e:
-        yield ("error", f"Validation failed: {e}")
-        return
+    for rel in files_to_read:
+        if rel in existing_paths:
+            continue
+        full = os.path.join(working_dir, rel)
+        content = _read_file(full)
+        if content is not None:
+            current_files.append(FileContent(path=rel, content=content))
+            added.append(rel)
+            existing_paths.add(rel)
 
-    # Build final summary
-    parts = [
-        "## Coding complete",
-        "",
-        f"**Plan:** {coding_plan.summary}",
-        "",
-        "**Files changed:**",
-    ]
-    for line in written:
-        parts.append(f"  - {line}")
+    state["files"] = current_files
+    if added:
+        return f"Read {len(added)} files: {', '.join(added)}"
+    return "No new files read"
 
-    parts.append("")
+
+async def _handle_plan(task: str, working_dir: str, state: dict[str, Any]) -> str:
+    """Handle the plan action."""
+    coding_plan, file_contents = await plan(
+        task,
+        working_dir,
+        state.get("dir_listing", []),
+        state.get("files", []),
+    )
+    state["coding_plan"] = coding_plan
+    state["files"] = file_contents
+    return f"Plan: {coding_plan.summary}"
+
+
+async def _handle_generate(state: dict[str, Any]) -> str:
+    """Handle the generate action."""
+    coding_plan = state.get("coding_plan")
+    if not coding_plan:
+        raise ValueError("No plan available. Run 'plan' first.")
+
+    generated = await generate(coding_plan, state.get("files", []))
+    if not generated.patches:
+        error = generated.explanation or "No patches generated"
+        raise ValueError(error)
+
+    state["generated"] = generated
+    return f"Generated {len(generated.patches)} patches: {', '.join(p.path for p in generated.patches)}"
+
+
+def _handle_write(working_dir: str, state: dict[str, Any]) -> str:
+    """Handle the write action."""
+    generated = state.get("generated")
+    if not generated or not generated.patches:
+        raise ValueError("No patches to write. Run 'generate' first.")
+
+    written = apply(generated, working_dir)
+    state["written"] = written
+    return f"Wrote {len(written)} files: {', '.join(written)}"
+
+
+async def _handle_validate(task: str, state: dict[str, Any]) -> str:
+    """Handle the validate action."""
+    coding_plan = state.get("coding_plan")
+    generated = state.get("generated")
+    if not coding_plan or not generated:
+        raise ValueError("Nothing to validate. Run 'plan' and 'generate' first.")
+
+    validation = await validate(task, coding_plan, generated)
+    state["validation"] = validation
+
     if validation.ok:
-        parts.append(f"**Validation:** Passed. {validation.summary}")
+        return f"Validation passed: {validation.summary}"
     else:
-        parts.append(f"**Validation:** Issues found. {validation.summary}")
-        for issue in validation.issues:
-            parts.append(f"  - {issue}")
+        issues = "; ".join(validation.issues[:3])
+        return f"Validation failed: {validation.summary}. Issues: {issues}"
 
-    yield ("result", "\n".join(parts))
+
+def _build_final_summary(state: dict[str, Any], summary: str) -> str:
+    """Build the final result summary."""
+    parts = ["## Coding complete", "", f"**Summary:** {summary}"]
+
+    if "coding_plan" in state:
+        parts.append(f"**Plan:** {state['coding_plan'].summary}")
+
+    if "written" in state and state["written"]:
+        parts.append("")
+        parts.append("**Files changed:**")
+        for line in state["written"]:
+            parts.append(f"  - {line}")
+
+    if "validation" in state:
+        parts.append("")
+        val = state["validation"]
+        if val.ok:
+            parts.append(f"**Validation:** Passed. {val.summary}")
+        else:
+            parts.append(f"**Validation:** Issues found. {val.summary}")
+            for issue in val.issues:
+                parts.append(f"  - {issue}")
+
+    return "\n".join(parts)

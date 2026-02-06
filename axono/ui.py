@@ -1,5 +1,7 @@
 from textual.containers import ScrollableContainer
-from textual.widgets import Collapsible, Static
+from textual.widgets import Collapsible, Input, Static
+
+from axono.history import append_to_history, load_history
 
 BANNER_TEXT = r"""
     _
@@ -170,3 +172,50 @@ class CwdStatus(Static):
     def update_path(self, path: str) -> None:
         escaped = path.replace("[", "\\[")
         self.update(f"[dim]CWD:[/dim] [dim]{escaped}[/dim]")
+
+
+class HistoryInput(Input):
+    """Input widget with arrow-key history navigation."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int = -1
+        self._current_input: str = ""
+
+    def on_mount(self) -> None:
+        """Load history from disk on mount."""
+        self._history = load_history()
+
+    def on_key(self, event) -> None:
+        """Handle arrow key navigation through history."""
+        if event.key == "up":
+            if not self._history:
+                return
+            if self._history_index == -1:
+                self._current_input = self.value
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            self.value = self._history[self._history_index]
+            self.cursor_position = len(self.value)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down":
+            if self._history_index == -1:
+                return
+            if self._history_index < len(self._history) - 1:
+                self._history_index += 1
+                self.value = self._history[self._history_index]
+            else:
+                self._history_index = -1
+                self.value = self._current_input
+            self.cursor_position = len(self.value)
+            event.prevent_default()
+            event.stop()
+
+    def add_to_history(self, prompt: str) -> None:
+        """Add a prompt to history and reset navigation state."""
+        self._history = append_to_history(prompt)
+        self._history_index = -1
+        self._current_input = ""

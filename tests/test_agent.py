@@ -306,10 +306,10 @@ class TestBuildAgent:
         assert graph is sentinel
         mock_init.assert_called_once()
         mock_create.assert_called_once()
-        # Should have bash and code as built-in tools
+        # Should have bash, shell, code, and search as built-in tools
         call_kwargs = mock_create.call_args
         tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
-        assert len(tools) == 2
+        assert len(tools) == 4
 
     @pytest.mark.asyncio
     async def test_build_agent_includes_mcp_tools(self):
@@ -326,7 +326,7 @@ class TestBuildAgent:
 
         call_kwargs = mock_create.call_args
         tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
-        assert len(tools) == 3  # bash + code + search
+        assert len(tools) == 5  # bash + shell + code + search + mcp
         prompt = call_kwargs.kwargs.get("system_prompt") or call_kwargs[1].get(
             "system_prompt"
         )

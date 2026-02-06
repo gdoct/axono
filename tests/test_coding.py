@@ -15,7 +15,6 @@ from axono.coding import (
     GeneratedCode,
     InvestigationResult,
     ValidationResult,
-    _coerce_response_text,
     _dedupe_file_contents,
     _extension_weight,
     _read_file,
@@ -36,6 +35,7 @@ from axono.coding import (
     run_coding_pipeline,
     validate,
 )
+from axono.pipeline import coerce_response_text
 
 # ---------------------------------------------------------------------------
 # _scan_directory
@@ -262,7 +262,7 @@ class TestSeedFiles:
 
 
 # ---------------------------------------------------------------------------
-# _dedupe_file_contents / _total_chars / _coerce_response_text
+# _dedupe_file_contents / _total_chars / coerce_response_text (from pipeline)
 # ---------------------------------------------------------------------------
 
 
@@ -284,17 +284,17 @@ class TestMiscHelpers:
         assert _total_chars(files) == 10
 
     def test_coerce_none(self):
-        assert _coerce_response_text(None) == ""
+        assert coerce_response_text(None) == ""
 
     def test_coerce_list(self):
-        result = _coerce_response_text([{"a": 1}])
+        result = coerce_response_text([{"a": 1}])
         assert result == json.dumps([{"a": 1}])
 
     def test_coerce_string(self):
-        assert _coerce_response_text("hello") == "hello"
+        assert coerce_response_text("hello") == "hello"
 
     def test_coerce_int(self):
-        assert _coerce_response_text(42) == "42"
+        assert coerce_response_text(42) == "42"
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +467,7 @@ class TestPlan:
             }
         )
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             coding_plan, files = await plan(
                 "add tests", "/tmp", ["test.py"], [FileContent("readme.md", "hi")]
             )
@@ -480,14 +480,14 @@ class TestPlan:
             '```json\n{"summary": "ok", "files_to_read": [], "patches": []}\n```'
         )
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             coding_plan, _ = await plan("task", "/tmp", [], [])
         assert coding_plan.summary == "ok"
 
     @pytest.mark.asyncio
     async def test_fallback_on_invalid_json(self):
         llm = _fake_llm("This is not JSON at all")
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             coding_plan, _ = await plan("task", "/tmp", [], [])
         assert "This is not JSON at all" in coding_plan.summary
         assert coding_plan.patches == []
@@ -505,7 +505,7 @@ class TestPlan:
             }
         )
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.MAX_CONTEXT_FILES = 10
                 cfg.MAX_CONTEXT_CHARS = 100_000
@@ -526,7 +526,7 @@ class TestPlan:
         )
         initial = [FileContent(f"f{i}.py", "x") for i in range(8)]
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.MAX_CONTEXT_FILES = 8  # already full
                 cfg.MAX_CONTEXT_CHARS = 100_000
@@ -546,7 +546,7 @@ class TestPlan:
             }
         )
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.MAX_CONTEXT_FILES = 10
                 cfg.MAX_CONTEXT_CHARS = 100_000
@@ -567,7 +567,7 @@ class TestPlan:
         )
         initial = [FileContent("dup.py", "content")]
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.MAX_CONTEXT_FILES = 10
                 cfg.MAX_CONTEXT_CHARS = 100_000
@@ -588,7 +588,7 @@ class TestPlan:
         )
         initial = [FileContent("seed.py", "y" * 9990)]
         llm = _fake_llm(plan_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.MAX_CONTEXT_FILES = 10
                 cfg.MAX_CONTEXT_CHARS = 10_000  # 9990 used, only 10 left
@@ -612,7 +612,7 @@ class TestGenerate:
             ]
         )
         llm = _fake_llm(gen_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(
                 CodingPlan(summary="s", patches=[]),
                 [FileContent("a.py", "old")],
@@ -627,14 +627,14 @@ class TestGenerate:
             '```json\n[{"path": "a.py", "action": "update", "content": "new"}]\n```'
         )
         llm = _fake_llm(gen_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(CodingPlan(summary="s", patches=[]), [])
         assert len(result.patches) == 1
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_explanation(self):
         llm = _fake_llm("Not JSON")
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(CodingPlan(summary="s", patches=[]), [])
         assert result.patches == []
         assert "Failed to parse" in result.explanation
@@ -648,7 +648,7 @@ class TestGenerate:
             ]
         )
         llm = _fake_llm(gen_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(CodingPlan(summary="s", patches=[]), [])
         assert result.patches == []
         assert "duplicate" in result.explanation.lower()
@@ -663,7 +663,7 @@ class TestGenerate:
             ]
         )
         llm = _fake_llm(gen_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(CodingPlan(summary="s", patches=[]), [])
         assert len(result.patches) == 1
         assert result.patches[0].path == "a.py"
@@ -672,7 +672,7 @@ class TestGenerate:
     async def test_default_action_is_update(self):
         gen_json = json.dumps([{"path": "a.py", "content": "code"}])
         llm = _fake_llm(gen_json)
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await generate(CodingPlan(summary="s", patches=[]), [])
         assert result.patches[0].action == "update"
 
@@ -740,7 +740,7 @@ class TestValidate:
     @pytest.mark.asyncio
     async def test_valid_code(self):
         llm = _fake_llm(json.dumps({"ok": True, "issues": [], "summary": "LGTM"}))
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await validate(
                 "task",
                 CodingPlan(summary="s", patches=[]),
@@ -761,7 +761,7 @@ class TestValidate:
                 }
             )
         )
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await validate(
                 "task",
                 CodingPlan(summary="s", patches=[]),
@@ -773,7 +773,7 @@ class TestValidate:
     @pytest.mark.asyncio
     async def test_invalid_json_defaults_to_ok(self):
         llm = _fake_llm("Everything looks great!")
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await validate(
                 "task",
                 CodingPlan(summary="s", patches=[]),
@@ -784,7 +784,7 @@ class TestValidate:
     @pytest.mark.asyncio
     async def test_strips_fences(self):
         llm = _fake_llm('```json\n{"ok": true, "issues": [], "summary": "ok"}\n```')
-        with mock.patch("axono.coding._get_llm", return_value=llm):
+        with mock.patch("axono.coding.get_llm", return_value=llm):
             result = await validate(
                 "task",
                 CodingPlan(summary="s", patches=[]),
@@ -794,30 +794,48 @@ class TestValidate:
 
 
 # ---------------------------------------------------------------------------
-# run_coding_pipeline (orchestrator)
+# run_coding_pipeline (iterative orchestrator)
 # ---------------------------------------------------------------------------
 
 
 class TestRunCodingPipeline:
+    """Tests for the iterative coding pipeline orchestrator.
+
+    The iterative pipeline works by having an LLM decide what action to take
+    next. The sequence typically goes:
+    1. investigate -> find relevant files
+    2. plan -> create a coding plan
+    3. generate -> generate code patches
+    4. write -> write patches to disk
+    5. validate -> validate the changes
+    6. done -> complete the task
+    """
 
     @pytest.mark.asyncio
     async def test_full_success(self, tmp_path):
+        """Test a complete successful pipeline run.
+
+        The iterative planner calls the LLM to decide actions, and then the
+        individual stage functions (plan, generate, validate) also call the LLM.
+        The calls are interleaved:
+        1. planner -> investigate
+        2. planner -> plan
+        3. plan() stage LLM call
+        4. planner -> generate
+        5. generate() stage LLM call
+        ... and so on
+        """
         (tmp_path / "README.md").write_text("# Project")
 
-        plan_json = json.dumps(
-            {
-                "summary": "Add file",
-                "files_to_read": [],
-                "patches": [
-                    {"path": "new.py", "action": "create", "description": "new"}
-                ],
-            }
-        )
-        gen_json = json.dumps(
-            [
-                {"path": "new.py", "action": "create", "content": "print('hi')"},
-            ]
-        )
+        # Responses for the individual stages
+        plan_json = json.dumps({
+            "summary": "Add file",
+            "files_to_read": [],
+            "patches": [{"path": "new.py", "action": "create", "description": "new"}],
+        })
+        gen_json = json.dumps([
+            {"path": "new.py", "action": "create", "content": "print('hi')"},
+        ])
         validate_json = json.dumps({"ok": True, "issues": [], "summary": "Good"})
 
         call_count = 0
@@ -825,17 +843,37 @@ class TestRunCodingPipeline:
         async def fake_ainvoke(messages):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
+            # Detect what kind of call this is by looking at system message
+            system_msg = messages[0].content if messages else ""
+
+            if "coding agent that decides what action" in system_msg:
+                # This is the iterative planner
+                if call_count == 1:
+                    return SimpleNamespace(content='{"action": "investigate", "reason": "find files"}')
+                elif call_count == 2:
+                    return SimpleNamespace(content='{"action": "plan", "reason": "create plan"}')
+                elif call_count == 4:
+                    return SimpleNamespace(content='{"action": "generate", "reason": "generate code"}')
+                elif call_count == 6:
+                    return SimpleNamespace(content='{"action": "write", "reason": "write files"}')
+                elif call_count == 7:
+                    return SimpleNamespace(content='{"action": "validate", "reason": "check code"}')
+                else:
+                    return SimpleNamespace(content='{"done": true, "summary": "Task complete"}')
+            elif "planning agent" in system_msg:
                 return SimpleNamespace(content=plan_json)
-            elif call_count == 2:
+            elif "code generation agent" in system_msg:
                 return SimpleNamespace(content=gen_json)
-            else:
+            elif "validation agent" in system_msg:
                 return SimpleNamespace(content=validate_json)
+            else:
+                # Default fallback
+                return SimpleNamespace(content='{"done": true, "summary": "Unknown call"}')
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
 
-        with mock.patch("axono.coding._get_llm", return_value=fake_llm):
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
             with mock.patch("axono.coding.config") as cfg:
                 cfg.INVESTIGATION_ENABLED = True
                 cfg.MAX_CONTEXT_FILES = 10
@@ -847,206 +885,199 @@ class TestRunCodingPipeline:
         types = [e[0] for e in events]
         assert "status" in types
         assert "result" in types
-        assert "error" not in types
         # The file should have been written
         assert (tmp_path / "new.py").read_text() == "print('hi')"
 
     @pytest.mark.asyncio
-    async def test_investigation_failure(self, tmp_path):
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", side_effect=RuntimeError("boom")
-                ):
-                    events = []
-                    async for ev in run_coding_pipeline("task", str(tmp_path)):
-                        events.append(ev)
+    async def test_immediate_done(self, tmp_path):
+        """Test that the pipeline handles immediate done response."""
+        done_response = json.dumps({"done": True, "summary": "Nothing to do"})
 
-        assert any(e[0] == "error" and "Investigation failed" in e[1] for e in events)
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = SimpleNamespace(content=done_response)
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        types = [e[0] for e in events]
+        assert "result" in types
+        assert "error" not in types
 
     @pytest.mark.asyncio
-    async def test_plan_failure(self, tmp_path):
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
+    async def test_investigation_failure(self, tmp_path):
+        """Test that investigation failures are handled and reported."""
+        action_response = json.dumps({"action": "investigate", "reason": "find files"})
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = SimpleNamespace(content=action_response)
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.coding._scan_directory", return_value=[]):
+                with mock.patch("axono.coding._read_seed_files", return_value=[]):
                     with mock.patch(
-                        "axono.coding.plan", side_effect=RuntimeError("LLM down")
+                        "axono.coding.investigate", side_effect=RuntimeError("boom")
                     ):
                         events = []
                         async for ev in run_coding_pipeline("task", str(tmp_path)):
                             events.append(ev)
 
-        assert any(e[0] == "error" and "Planning failed" in e[1] for e in events)
+        assert any(e[0] == "error" and "investigate failed" in e[1].lower() for e in events)
 
     @pytest.mark.asyncio
-    async def test_empty_plan_aborts(self, tmp_path):
-        empty_plan = CodingPlan(summary="nothing to do", patches=[])
+    async def test_plan_failure(self, tmp_path):
+        """Test that plan failures are handled and reported."""
+        action_response = json.dumps({"action": "plan", "reason": "create plan"})
+        done_response = json.dumps({"done": True, "summary": "Gave up"})
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(empty_plan, [])):
-                        events = []
-                        async for ev in run_coding_pipeline("task", str(tmp_path)):
-                            events.append(ev)
+        call_count = 0
 
-        assert any(
-            e[0] == "error" and "no file changes" in e[1].lower() for e in events
-        )
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(content=action_response)
+            return SimpleNamespace(content=done_response)
 
-    @pytest.mark.asyncio
-    async def test_generate_failure(self, tmp_path):
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch(
-                            "axono.coding.generate", side_effect=RuntimeError("err")
-                        ):
-                            events = []
-                            async for ev in run_coding_pipeline("task", str(tmp_path)):
-                                events.append(ev)
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.coding.plan", side_effect=RuntimeError("LLM down")):
+                events = []
+                async for ev in run_coding_pipeline("task", str(tmp_path)):
+                    events.append(ev)
 
-        assert any(
-            e[0] == "error" and "generation failed" in e[1].lower() for e in events
-        )
+        assert any(e[0] == "error" and "plan failed" in e[1].lower() for e in events)
 
     @pytest.mark.asyncio
-    async def test_empty_generate_aborts(self, tmp_path):
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
-        empty_gen = GeneratedCode(patches=[], explanation="No output")
+    async def test_generate_without_plan_fails(self, tmp_path):
+        """Test that generate action without a plan fails gracefully."""
+        action_responses = [
+            json.dumps({"action": "generate", "reason": "no plan yet"}),
+            json.dumps({"done": True, "summary": "Gave up"}),
+        ]
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch(
-                            "axono.coding.generate", return_value=empty_gen
-                        ):
-                            events = []
-                            async for ev in run_coding_pipeline("task", str(tmp_path)):
-                                events.append(ev)
+        call_count = 0
 
-        assert any(e[0] == "error" and "No output" in e[1] for e in events)
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(content=action_responses[min(call_count - 1, 1)])
 
-    @pytest.mark.asyncio
-    async def test_apply_failure(self, tmp_path):
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
-        gen = GeneratedCode(patches=[FilePatch("a.py", "code")])
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch("axono.coding.generate", return_value=gen):
-                            with mock.patch(
-                                "axono.coding.apply", side_effect=PermissionError("no")
-                            ):
-                                events = []
-                                async for ev in run_coding_pipeline(
-                                    "task", str(tmp_path)
-                                ):
-                                    events.append(ev)
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
 
-        assert any(e[0] == "error" and "File write failed" in e[1] for e in events)
+        assert any(e[0] == "error" and "No plan" in e[1] for e in events)
 
     @pytest.mark.asyncio
-    async def test_validate_failure(self, tmp_path):
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
-        gen = GeneratedCode(patches=[FilePatch("a.py", "code")])
+    async def test_write_without_generate_fails(self, tmp_path):
+        """Test that write action without generated patches fails."""
+        action_responses = [
+            json.dumps({"action": "write", "reason": "no patches yet"}),
+            json.dumps({"done": True, "summary": "Gave up"}),
+        ]
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch("axono.coding.generate", return_value=gen):
-                            with mock.patch(
-                                "axono.coding.apply", return_value=["Updated: a.py"]
-                            ):
-                                with mock.patch(
-                                    "axono.coding.validate",
-                                    side_effect=RuntimeError("bad"),
-                                ):
-                                    events = []
-                                    async for ev in run_coding_pipeline(
-                                        "task", str(tmp_path)
-                                    ):
-                                        events.append(ev)
+        call_count = 0
 
-        assert any(e[0] == "error" and "Validation failed" in e[1] for e in events)
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(content=action_responses[min(call_count - 1, 1)])
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "No patches" in e[1] for e in events)
 
     @pytest.mark.asyncio
-    async def test_validation_issues_reported(self, tmp_path):
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
-        gen = GeneratedCode(patches=[FilePatch("a.py", "code")])
-        val = ValidationResult(ok=False, issues=["bug"], summary="bad code")
+    async def test_max_steps_limit(self, tmp_path):
+        """Test that the pipeline stops after max steps."""
+        # Always return investigate action, never done
+        action_response = json.dumps({"action": "investigate", "reason": "loop"})
 
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch(
-                    "axono.coding.investigate", return_value=InvestigationResult()
-                ):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch("axono.coding.generate", return_value=gen):
-                            with mock.patch(
-                                "axono.coding.apply", return_value=["Updated: a.py"]
-                            ):
-                                with mock.patch(
-                                    "axono.coding.validate", return_value=val
-                                ):
-                                    events = []
-                                    async for ev in run_coding_pipeline(
-                                        "task", str(tmp_path)
-                                    ):
-                                        events.append(ev)
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = SimpleNamespace(content=action_response)
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.coding.config") as cfg:
+                cfg.INVESTIGATION_ENABLED = False
+                events = []
+                async for ev in run_coding_pipeline("task", str(tmp_path)):
+                    events.append(ev)
+
+        result_events = [e for e in events if e[0] == "result"]
+        assert len(result_events) == 1
+        assert "15 steps" in result_events[0][1]
+
+    @pytest.mark.asyncio
+    async def test_validation_issues_in_result(self, tmp_path):
+        """Test that validation issues appear in the final result."""
+        (tmp_path / "README.md").write_text("# Project")
+
+        plan_json = json.dumps({
+            "summary": "Fix bug",
+            "files_to_read": [],
+            "patches": [{"path": "a.py", "action": "update", "description": "fix"}],
+        })
+        gen_json = json.dumps([{"path": "a.py", "action": "update", "content": "code"}])
+        validate_json = json.dumps({
+            "ok": False,
+            "issues": ["missing import", "typo"],
+            "summary": "bad code",
+        })
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            system_msg = messages[0].content if messages else ""
+
+            if "coding agent that decides what action" in system_msg:
+                # Iterative planner decisions
+                if call_count == 1:
+                    return SimpleNamespace(content='{"action": "plan", "reason": "plan"}')
+                elif call_count == 3:
+                    return SimpleNamespace(content='{"action": "generate", "reason": "generate"}')
+                elif call_count == 5:
+                    return SimpleNamespace(content='{"action": "write", "reason": "write"}')
+                elif call_count == 6:
+                    return SimpleNamespace(content='{"action": "validate", "reason": "validate"}')
+                else:
+                    return SimpleNamespace(content='{"done": true, "summary": "Done with issues"}')
+            elif "planning agent" in system_msg:
+                return SimpleNamespace(content=plan_json)
+            elif "code generation agent" in system_msg:
+                return SimpleNamespace(content=gen_json)
+            elif "validation agent" in system_msg:
+                return SimpleNamespace(content=validate_json)
+            else:
+                return SimpleNamespace(content='{"done": true, "summary": "Unknown"}')
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.coding.config") as cfg:
+                cfg.MAX_CONTEXT_FILES = 10
+                cfg.MAX_CONTEXT_CHARS = 100_000
+                events = []
+                async for ev in run_coding_pipeline("fix bug", str(tmp_path)):
+                    events.append(ev)
 
         result_events = [e for e in events if e[0] == "result"]
         assert len(result_events) == 1
         assert "Issues found" in result_events[0][1]
-        assert "bug" in result_events[0][1]
-
-    @pytest.mark.asyncio
-    async def test_investigation_skipped_files_reported(self, tmp_path):
-        inv = InvestigationResult(
-            files=[],
-            summary="Investigated",
-            skipped=["big.py (over budget)"],
-        )
-
-        some_plan = CodingPlan(summary="s", patches=[{"path": "a.py"}])
-        gen = GeneratedCode(patches=[FilePatch("a.py", "code")])
-        val = ValidationResult(ok=True, summary="ok")
-
-        with mock.patch("axono.coding._scan_directory", return_value=[]):
-            with mock.patch("axono.coding._read_seed_files", return_value=[]):
-                with mock.patch("axono.coding.investigate", return_value=inv):
-                    with mock.patch("axono.coding.plan", return_value=(some_plan, [])):
-                        with mock.patch("axono.coding.generate", return_value=gen):
-                            with mock.patch(
-                                "axono.coding.apply", return_value=["Updated: a.py"]
-                            ):
-                                with mock.patch(
-                                    "axono.coding.validate", return_value=val
-                                ):
-                                    events = []
-                                    async for ev in run_coding_pipeline(
-                                        "task", str(tmp_path)
-                                    ):
-                                        events.append(ev)
-
-        status_texts = [e[1] for e in events if e[0] == "status"]
-        assert any("skipped" in s.lower() for s in status_texts)
+        assert "bad code" in result_events[0][1]

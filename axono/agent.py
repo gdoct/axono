@@ -1,7 +1,9 @@
+import asyncio
 import os
 import subprocess  # nosec B404 -- intentional: bash tool requires subprocess
 import sys
 from collections.abc import AsyncGenerator
+from functools import partial
 from typing import Any
 
 from langchain.agents import create_agent
@@ -12,6 +14,8 @@ from langchain_core.tools import tool
 from axono import config
 from axono.coding import run_coding_pipeline
 from axono.safety import judge_command
+from axono.shell import run_shell_pipeline
+from langchain_community.tools import DuckDuckGoSearchRun
 
 try:
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -23,32 +27,19 @@ except ImportError:  # pragma: no cover
 
 SYSTEM_PROMPT = (
     "You are a helpful personal AI assistant running in a terminal. "
-    "You have access to the local filesystem and can execute shell commands "
-    "using the bash tool. When the user asks you to perform a system task, "
-    "use the bash tool to execute the appropriate command. "
-    "\n\n"
-    "You also have a `code` tool for software engineering tasks. Use the "
-    "`code` tool when the user asks you to: write code, implement a method "
-    "or feature, edit source files, create new source files, fix bugs in "
-    "code, refactor code, or any task that involves reading and modifying "
-    "source code files. The `code` tool will scan the project directory, "
-    "plan the changes, generate code, write it to disk, and validate the "
-    "result. Pass the user's request as the `task` parameter and the "
-    "project directory as `working_dir`.\n\n"
-    "IMPORTANT RESPONSE STYLE RULES:\n"
-    "- Be extremely concise. Give short, to-the-point replies.\n"
-    "- Do NOT narrate what you are about to do or what you just did.\n"
-    "- Do NOT add filler like 'What would you like to do next?' or "
-    "'Let me know if you need anything else.'\n"
-    "- After running a tool, only reply if there is something meaningful "
-    "to report (e.g. an error, a summary of results). A simple action "
-    "like changing directories needs no commentary at all.\n"
-    "- Prefer one-line answers when possible.\n\n"
-    "The bash tool has a built-in safety check. If a command is blocked as "
-    "dangerous, tell the user what was blocked and why, then ask if they "
-    "want to proceed. If the user confirms, re-run the same command with "
-    "the `unsafe` flag set to true to bypass the safety check. Never set "
-    "`unsafe` to true unless the user has explicitly confirmed."
+    "You have access to the local filesystem and can execute shell commands.\n\n"
+    "TOOLS:\n"
+    "- `shell`: Use for task-oriented requests like 'install X', 'clone and build Y', "
+    "'set up a Python environment'. It plans steps, executes them, and verifies.\n"
+    "- `bash`: Use for simple direct commands when you know exactly what to run.\n"
+    "- `code`: Use for editing/writing source code files.\n"
+    "- `duckduckgo_search`: Use to search the web for current information.\n\n"
+    "RESPONSE STYLE:\n"
+    "- Be extremely concise. One-line answers when possible.\n"
+    "- Do NOT narrate what you're doing or add filler.\n"
+    "- After a tool runs, only reply if there's something meaningful to report.\n\n"
+    "SAFETY: Tools have safety checks. If blocked, tell the user why and ask "
+    "if they want to proceed. Only set `unsafe=true` after explicit confirmation."
 )
 
 _CURRENT_DIR = os.path.expanduser("~")
@@ -81,39 +72,57 @@ async def bash(command: str, unsafe: bool = False) -> str:
             print(f"Warning: safety check failed: {exc}", file=sys.stderr)
     cmd = command.strip()
     cwd = _CURRENT_DIR
-    if cmd.startswith("cd "):
+
+    # Handle pure "cd <path>" command
+    if cmd.startswith("cd ") and "&&" not in cmd and ";" not in cmd:
         target = cmd[3:].strip()
-        if "&&" in target:
-            target, remainder = target.split("&&", 1)
-            target = target.strip()
-            cmd = remainder.strip()
-        else:
-            cmd = ""
         target = os.path.expanduser(target)
         if not os.path.isabs(target):
             target = os.path.abspath(os.path.join(cwd, target))
         if os.path.isdir(target):
             _CURRENT_DIR = target
-            cwd = _CURRENT_DIR
+            return f"__CWD__:{_CURRENT_DIR}"
         else:
             return f"Error: Directory not found: {target}\n__CWD__:{_CURRENT_DIR}"
 
+    # Check if command contains cd (we'll need to track the final directory)
+    has_cd = " cd " in f" {cmd} " or cmd.startswith("cd ") or "&&cd " in cmd or "; cd " in cmd
+
     try:
-        if not cmd:
-            return f"__CWD__:{_CURRENT_DIR}"
-        result = subprocess.run(  # nosec B602 -- intentional: user-facing shell tool, guarded by LLM safety judge
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=config.COMMAND_TIMEOUT,
-            cwd=cwd,
+        # Run the command, appending pwd to capture final directory if cd is involved
+        if has_cd:
+            exec_cmd = f"{cmd} && pwd"
+        else:
+            exec_cmd = cmd
+
+        # Use asyncio.to_thread to avoid blocking the event loop
+        result = await asyncio.to_thread(
+            partial(
+                subprocess.run,  # nosec B602 -- intentional: user-facing shell tool, guarded by LLM safety judge
+                exec_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=config.COMMAND_TIMEOUT,
+                cwd=cwd,
+            )
         )
+
         output = ""
         if result.stdout:
             output += result.stdout
         if result.stderr:
             output += ("\n[stderr]\n" + result.stderr) if output else result.stderr
+
+        # If we appended pwd, extract and update the final directory
+        if has_cd and result.returncode == 0 and output.strip():
+            lines = output.strip().split("\n")
+            potential_dir = lines[-1].strip()
+            if os.path.isdir(potential_dir):
+                _CURRENT_DIR = potential_dir
+                # Remove the pwd output from display
+                output = "\n".join(lines[:-1]) if len(lines) > 1 else ""
+
         if not output.strip():
             output = f"(command completed with exit code {result.returncode})"
         max_len = 8000
@@ -153,6 +162,67 @@ async def code(task: str, working_dir: str) -> str:
     return "\n".join(output_parts)
 
 
+@tool
+async def shell(task: str, working_dir: str, unsafe: bool = False) -> str:
+    """Execute a multi-step shell task with planning and verification.
+
+    Use this tool for complex shell tasks like "clone this repo and build it",
+    "install these packages", or "set up a Python environment". The tool will:
+    1. Plan the necessary commands
+    2. Execute them step by step
+    3. Verify the result
+
+    For simple single commands, it will detect this and run directly.
+
+    Args:
+        task: What the user wants to do (e.g. "install numpy and pandas").
+        working_dir: Absolute path to run commands in.
+        unsafe: Skip safety checks. Only use after user confirms.
+    """
+    global _CURRENT_DIR
+    new_cwd = None
+    steps_run = 0
+    last_status = ""
+    last_output = ""
+    result_msg = ""
+    errors: list[str] = []
+
+    async for event_type, data in run_shell_pipeline(task, working_dir, unsafe):
+        if event_type == "status":
+            last_status = str(data)
+            steps_run += 1
+        elif event_type == "output":
+            if data:
+                last_output = str(data)
+        elif event_type == "result":
+            if data:
+                result_msg = str(data)
+        elif event_type == "error":
+            errors.append(str(data))
+        elif event_type == "cwd":
+            new_cwd = str(data)
+
+    # Build compact output
+    output_parts: list[str] = []
+    if steps_run > 1:
+        output_parts.append(f"Ran {steps_run} commands")
+    if last_status:
+        output_parts.append(last_status)
+    if last_output and len(last_output) < 200:
+        output_parts.append(last_output)
+    if errors:
+        output_parts.append(f"Errors: {'; '.join(errors[-2:])}")  # Last 2 errors
+    if result_msg:
+        output_parts.append(result_msg)
+
+    # Update global cwd if changed
+    if new_cwd and new_cwd != working_dir:
+        _CURRENT_DIR = new_cwd
+        output_parts.append(f"__CWD__:{new_cwd}")
+
+    return "\n".join(output_parts) if output_parts else "(done)"
+
+
 async def _load_mcp_tools() -> list:
     """Load tools from configured MCP servers.
 
@@ -187,9 +257,10 @@ async def build_agent(on_status=None):
         api_key=config.LLM_API_KEY,
     )
 
-    builtin_tools = [bash, code]
+    builtin_tools = [bash, shell, code]
     mcp_tools = await _load_mcp_tools()
-    all_tools = builtin_tools + mcp_tools
+    search_tool = DuckDuckGoSearchRun()
+    all_tools = builtin_tools + mcp_tools + [search_tool]
 
     system_prompt = SYSTEM_PROMPT
     if mcp_tools:

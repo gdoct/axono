@@ -4,7 +4,7 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Input
+from textual.widgets import Footer
 
 from axono.agent import build_agent, run_agent
 from axono.config import needs_onboarding
@@ -14,15 +14,44 @@ from axono.ui import (
     Banner,
     ChatContainer,
     CwdStatus,
+    HistoryInput,
     SystemMessage,
     UserMessage,
 )
+
+
+def _friendly_tool_name(tool_call: str) -> str:
+    """Convert raw tool call to friendly display name."""
+    # tool_call looks like: "shell({'task': '...', 'working_dir': '...'})"
+    # or "bash({'command': 'ls'})"
+    if tool_call.startswith("shell("):
+        return "🔧 Running shell task..."
+    elif tool_call.startswith("bash("):
+        # Extract command if short enough
+        try:
+            start = tool_call.find("'command': '") + 12
+            end = tool_call.find("'", start)
+            cmd = tool_call[start:end]
+            if len(cmd) > 40:
+                cmd = cmd[:40] + "..."
+            return f"$ {cmd}"
+        except Exception:
+            return "$ ..."
+    elif tool_call.startswith("code("):
+        return "📝 Editing code..."
+    elif tool_call.startswith("duckduckgo"):
+        return "🔍 Searching web..."
+    else:
+        # MCP or unknown tool - show name only
+        name = tool_call.split("(")[0] if "(" in tool_call else tool_call
+        return f"⚙️ {name}..."
 
 
 class AxonoApp(App):
     """Personal AI Assistant TUI Application."""
 
     TITLE = "Axono"
+    ALLOW_SELECT = True
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", show=True),
@@ -56,11 +85,11 @@ class AxonoApp(App):
     def compose(self) -> ComposeResult:
         yield ChatContainer(Banner(), id="chat-container")
         yield CwdStatus(id="cwd-status")
-        yield Input(placeholder="Type a message...", id="input-area")
+        yield HistoryInput(placeholder="Type a message...", id="input-area")
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.query_one("#input-area", Input).focus()
+        self.query_one("#input-area", HistoryInput).focus()
         self.query_one("#cwd-status", CwdStatus).update_path(self._cwd)
         if self._force_onboard or needs_onboarding():
             self.push_screen(OnboardingScreen(), callback=self._on_onboarding_done)
@@ -93,7 +122,7 @@ class AxonoApp(App):
                 SystemMessage(f"Failed to initialize agent: {e}", prefix="Error")
             )
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: HistoryInput.Submitted) -> None:
         user_text = event.value.strip()
         if not user_text:
             return
@@ -101,7 +130,9 @@ class AxonoApp(App):
             self.notify("Please wait for the current response...", severity="warning")
             return
 
-        event.input.value = ""
+        input_widget = self.query_one("#input-area", HistoryInput)
+        input_widget.value = ""
+        input_widget.add_to_history(user_text)
 
         chat = self.query_one("#chat-container", ChatContainer)
         await chat.add_message(UserMessage(user_text))
@@ -137,7 +168,8 @@ class AxonoApp(App):
                 if event_type == "assistant":
                     await chat.add_message(AssistantMessage(message_text))
                 elif event_type == "tool_call":
-                    await chat.add_tool_group(f"Tool: {message_text}")
+                    friendly = _friendly_tool_name(message_text)
+                    await chat.add_tool_group(friendly)
                 elif event_type == "tool_result":
                     output = message_text
                     if "__CWD__:" in output:

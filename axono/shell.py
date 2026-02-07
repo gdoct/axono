@@ -565,10 +565,14 @@ async def run_shell_pipeline(task: str, working_dir: str, unsafe: bool = False):
         )
 
     # Note: plan cannot be None here because:
-    # - If plan_shell raises, we return early (line 520)
-    # - If plan_shell returns empty steps, we return early (line 513)
+    # - If plan_shell raises, we return early (line 536)
+    # - If plan_shell returns empty steps, we return early (line 530)
     # - Otherwise, plan is set to a valid ShellPlan
-    assert plan is not None, "Plan should never be None at this point"
+    # This check satisfies the type checker without using assert
+    if plan is None:  # pragma: no cover
+        yield ("error", "No plan generated")
+        yield ("cwd", working_dir)
+        return
 
     # Stage 4: Execution
     yield ("status", "Executing plan...")

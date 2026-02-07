@@ -826,14 +826,20 @@ class TestRunCodingPipeline:
         (tmp_path / "README.md").write_text("# Project")
 
         # Responses for the individual stages
-        plan_json = json.dumps({
-            "summary": "Add file",
-            "files_to_read": [],
-            "patches": [{"path": "new.py", "action": "create", "description": "new"}],
-        })
-        gen_json = json.dumps([
-            {"path": "new.py", "action": "create", "content": "print('hi')"},
-        ])
+        plan_json = json.dumps(
+            {
+                "summary": "Add file",
+                "files_to_read": [],
+                "patches": [
+                    {"path": "new.py", "action": "create", "description": "new"}
+                ],
+            }
+        )
+        gen_json = json.dumps(
+            [
+                {"path": "new.py", "action": "create", "content": "print('hi')"},
+            ]
+        )
         validate_json = json.dumps({"ok": True, "issues": [], "summary": "Good"})
 
         call_count = 0
@@ -847,17 +853,29 @@ class TestRunCodingPipeline:
             if "coding agent that decides what action" in system_msg:
                 # This is the iterative planner
                 if call_count == 1:
-                    return SimpleNamespace(content='{"action": "investigate", "reason": "find files"}')
+                    return SimpleNamespace(
+                        content='{"action": "investigate", "reason": "find files"}'
+                    )
                 elif call_count == 2:
-                    return SimpleNamespace(content='{"action": "plan", "reason": "create plan"}')
+                    return SimpleNamespace(
+                        content='{"action": "plan", "reason": "create plan"}'
+                    )
                 elif call_count == 4:
-                    return SimpleNamespace(content='{"action": "generate", "reason": "generate code"}')
+                    return SimpleNamespace(
+                        content='{"action": "generate", "reason": "generate code"}'
+                    )
                 elif call_count == 6:
-                    return SimpleNamespace(content='{"action": "write", "reason": "write files"}')
+                    return SimpleNamespace(
+                        content='{"action": "write", "reason": "write files"}'
+                    )
                 elif call_count == 7:
-                    return SimpleNamespace(content='{"action": "validate", "reason": "check code"}')
+                    return SimpleNamespace(
+                        content='{"action": "validate", "reason": "check code"}'
+                    )
                 else:
-                    return SimpleNamespace(content='{"done": true, "summary": "Task complete"}')
+                    return SimpleNamespace(
+                        content='{"done": true, "summary": "Task complete"}'
+                    )
             elif "planning agent" in system_msg:
                 return SimpleNamespace(content=plan_json)
             elif "code generation agent" in system_msg:
@@ -866,7 +884,9 @@ class TestRunCodingPipeline:
                 return SimpleNamespace(content=validate_json)
             else:  # pragma: no cover
                 # Default fallback
-                return SimpleNamespace(content='{"done": true, "summary": "Unknown call"}')
+                return SimpleNamespace(
+                    content='{"done": true, "summary": "Unknown call"}'
+                )
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
@@ -921,7 +941,9 @@ class TestRunCodingPipeline:
                         async for ev in run_coding_pipeline("task", str(tmp_path)):
                             events.append(ev)
 
-        assert any(e[0] == "error" and "investigate failed" in e[1].lower() for e in events)
+        assert any(
+            e[0] == "error" and "investigate failed" in e[1].lower() for e in events
+        )
 
     @pytest.mark.asyncio
     async def test_plan_failure(self, tmp_path):
@@ -1024,17 +1046,21 @@ class TestRunCodingPipeline:
         """Test that validation issues appear in the final result."""
         (tmp_path / "README.md").write_text("# Project")
 
-        plan_json = json.dumps({
-            "summary": "Fix bug",
-            "files_to_read": [],
-            "patches": [{"path": "a.py", "action": "update", "description": "fix"}],
-        })
+        plan_json = json.dumps(
+            {
+                "summary": "Fix bug",
+                "files_to_read": [],
+                "patches": [{"path": "a.py", "action": "update", "description": "fix"}],
+            }
+        )
         gen_json = json.dumps([{"path": "a.py", "action": "update", "content": "code"}])
-        validate_json = json.dumps({
-            "ok": False,
-            "issues": ["missing import", "typo"],
-            "summary": "bad code",
-        })
+        validate_json = json.dumps(
+            {
+                "ok": False,
+                "issues": ["missing import", "typo"],
+                "summary": "bad code",
+            }
+        )
 
         call_count = 0
 
@@ -1046,15 +1072,25 @@ class TestRunCodingPipeline:
             if "coding agent that decides what action" in system_msg:
                 # Iterative planner decisions
                 if call_count == 1:
-                    return SimpleNamespace(content='{"action": "plan", "reason": "plan"}')
+                    return SimpleNamespace(
+                        content='{"action": "plan", "reason": "plan"}'
+                    )
                 elif call_count == 3:
-                    return SimpleNamespace(content='{"action": "generate", "reason": "generate"}')
+                    return SimpleNamespace(
+                        content='{"action": "generate", "reason": "generate"}'
+                    )
                 elif call_count == 5:
-                    return SimpleNamespace(content='{"action": "write", "reason": "write"}')
+                    return SimpleNamespace(
+                        content='{"action": "write", "reason": "write"}'
+                    )
                 elif call_count == 6:
-                    return SimpleNamespace(content='{"action": "validate", "reason": "validate"}')
+                    return SimpleNamespace(
+                        content='{"action": "validate", "reason": "validate"}'
+                    )
                 else:
-                    return SimpleNamespace(content='{"done": true, "summary": "Done with issues"}')
+                    return SimpleNamespace(
+                        content='{"done": true, "summary": "Done with issues"}'
+                    )
             elif "planning agent" in system_msg:
                 return SimpleNamespace(content=plan_json)
             elif "code generation agent" in system_msg:
@@ -1117,7 +1153,9 @@ class TestRunCodingPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"action": "read_files", "files": ["extra.py"], "reason": "need more context"}')
+                return SimpleNamespace(
+                    content='{"action": "read_files", "files": ["extra.py"], "reason": "need more context"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Read file"}')
 
         fake_llm = mock.AsyncMock()
@@ -1164,11 +1202,13 @@ class TestRunCodingPipeline:
         """Generate returns error when no patches generated."""
         (tmp_path / "README.md").write_text("# Project")
 
-        plan_json = json.dumps({
-            "summary": "Do nothing",
-            "files_to_read": [],
-            "patches": [],
-        })
+        plan_json = json.dumps(
+            {
+                "summary": "Do nothing",
+                "files_to_read": [],
+                "patches": [],
+            }
+        )
         # Generator returns empty array - no patches
         gen_json = json.dumps([])
 
@@ -1181,9 +1221,13 @@ class TestRunCodingPipeline:
 
             if "coding agent that decides what action" in system_msg:
                 if call_count == 1:
-                    return SimpleNamespace(content='{"action": "plan", "reason": "plan"}')
+                    return SimpleNamespace(
+                        content='{"action": "plan", "reason": "plan"}'
+                    )
                 elif call_count == 3:
-                    return SimpleNamespace(content='{"action": "generate", "reason": "generate"}')
+                    return SimpleNamespace(
+                        content='{"action": "generate", "reason": "generate"}'
+                    )
                 else:
                     return SimpleNamespace(content='{"done": true, "summary": "Done"}')
             elif "planning agent" in system_msg:
@@ -1205,7 +1249,10 @@ class TestRunCodingPipeline:
                     events.append(ev)
 
         # Should have an error about no patches
-        assert any(e[0] == "error" and ("No patches" in e[1] or "generate" in e[1].lower()) for e in events)
+        assert any(
+            e[0] == "error" and ("No patches" in e[1] or "generate" in e[1].lower())
+            for e in events
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1232,7 +1279,12 @@ class TestBuildIterativePrompt:
         from axono.coding import _build_iterative_prompt
 
         history = [
-            {"action": "plan", "success": False, "error": "LLM failed", "reason": "create plan"},
+            {
+                "action": "plan",
+                "success": False,
+                "error": "LLM failed",
+                "reason": "create plan",
+            },
         ]
         state = {}
         prompt = _build_iterative_prompt("task", "/tmp", history, state)
@@ -1243,10 +1295,12 @@ class TestBuildIterativePrompt:
 
     def test_includes_validation_failed(self):
         """Prompt shows failed validation with issues."""
-        from axono.coding import _build_iterative_prompt, ValidationResult
+        from axono.coding import ValidationResult, _build_iterative_prompt
 
         state = {
-            "validation": ValidationResult(ok=False, issues=["missing import", "typo"], summary="bad code"),
+            "validation": ValidationResult(
+                ok=False, issues=["missing import", "typo"], summary="bad code"
+            ),
         }
         prompt = _build_iterative_prompt("task", "/tmp", [], state)
 
@@ -1347,7 +1401,7 @@ class TestHandleReadFiles:
 
     def test_skips_existing_files(self, tmp_path):
         """Files already in state are skipped."""
-        from axono.coding import _handle_read_files, FileContent
+        from axono.coding import FileContent, _handle_read_files
 
         (tmp_path / "a.py").write_text("a content")
 
@@ -1363,7 +1417,7 @@ class TestHandleReadFiles:
 
     def test_reads_new_files(self, tmp_path):
         """New files are added to state."""
-        from axono.coding import _handle_read_files, FileContent
+        from axono.coding import FileContent, _handle_read_files
 
         (tmp_path / "new.py").write_text("new content")
 

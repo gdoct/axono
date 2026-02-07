@@ -24,7 +24,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from axono import config
-from axono.pipeline import get_llm, coerce_response_text, parse_json, truncate
+from axono.pipeline import coerce_response_text, get_llm, parse_json, truncate
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -363,7 +363,7 @@ async def plan(
 
     Returns the plan and the file contents that were gathered.
     """
-    llm = get_llm()
+    llm = get_llm("reasoning")
     files_block = "\n\n".join(
         f"### {fc.path}\n```\n{fc.content}\n```" for fc in initial_files
     )
@@ -455,7 +455,7 @@ async def generate(
     file_contents: list[FileContent],
 ) -> GeneratedCode:
     """Stage 2: Generate code based on the plan and file context."""
-    llm = get_llm()
+    llm = get_llm("instruction")
 
     files_block = "\n\n".join(
         f"### {fc.path}\n```\n{fc.content}\n```" for fc in file_contents
@@ -568,7 +568,7 @@ async def validate(
     generated: GeneratedCode,
 ) -> ValidationResult:
     """Stage 4: Validate the generated code."""
-    llm = get_llm()
+    llm = get_llm("reasoning")
 
     files_block = "\n\n".join(
         f"### {p.path}\n```\n{p.content}\n```" for p in generated.patches
@@ -692,7 +692,7 @@ async def _plan_next_action(
     state: dict[str, Any],
 ) -> dict:
     """Plan the next action using the LLM."""
-    llm = get_llm()
+    llm = get_llm("reasoning")
     user_prompt = _build_iterative_prompt(task, cwd, history, state)
 
     messages = [
@@ -764,13 +764,17 @@ async def run_coding_pipeline(task: str, working_dir: str):
         try:
             if action == "investigate":
                 result = _handle_investigate(task, working_dir, state)
-                history.append({"action": "investigate", "success": True, "reason": reason})
+                history.append(
+                    {"action": "investigate", "success": True, "reason": reason}
+                )
                 yield ("status", result)
 
             elif action == "read_files":
                 files_to_read = action_plan.get("files", [])
                 result = _handle_read_files(working_dir, files_to_read, state)
-                history.append({"action": "read_files", "success": True, "reason": reason})
+                history.append(
+                    {"action": "read_files", "success": True, "reason": reason}
+                )
                 yield ("status", result)
 
             elif action == "plan":
@@ -780,7 +784,9 @@ async def run_coding_pipeline(task: str, working_dir: str):
 
             elif action == "generate":
                 result = await _handle_generate(state)
-                history.append({"action": "generate", "success": True, "reason": reason})
+                history.append(
+                    {"action": "generate", "success": True, "reason": reason}
+                )
                 yield ("status", result)
 
             elif action == "write":
@@ -790,17 +796,23 @@ async def run_coding_pipeline(task: str, working_dir: str):
 
             elif action == "validate":
                 result = await _handle_validate(task, state)
-                history.append({"action": "validate", "success": True, "reason": reason})
+                history.append(
+                    {"action": "validate", "success": True, "reason": reason}
+                )
                 yield ("status", result)
 
             else:
                 yield ("error", f"Unknown action: {action}")
-                history.append({"action": action, "success": False, "error": "Unknown action"})
+                history.append(
+                    {"action": action, "success": False, "error": "Unknown action"}
+                )
 
         except Exception as e:
             error_msg = f"{action} failed: {e}"
             yield ("error", error_msg)
-            history.append({"action": action, "success": False, "error": str(e), "reason": reason})
+            history.append(
+                {"action": action, "success": False, "error": str(e), "reason": reason}
+            )
             # Continue to let the LLM decide what to do next
 
     # Reached max steps

@@ -20,14 +20,17 @@ load_dotenv()
 # ── defaults ──────────────────────────────────────────────────────────
 _DEFAULTS = {
     "base_url": "http://192.168.32.1:1234/v1",
-    "model_name": "local-model",
+    "model_name": "",  # Empty means use the loaded model in LM Studio backend
     "model_provider": "openai",
     "api_key": "lm-studio",
+    "instruction_model": "",  # Empty means use model_name (or backend default)
+    "reasoning_model": "",  # Empty means use instruction_model
     "command_timeout": "30",
     "investigation_enabled": "true",
     "max_context_files": "8",
     "max_context_chars": "30000",
 }
+
 
 # ── data directory (configurable via AXONO_DATA_DIR) ──────────────────
 def _get_data_dir() -> Path:
@@ -59,6 +62,8 @@ def _get(key: str) -> str:
         "model_name": "LLM_MODEL_NAME",
         "model_provider": "LLM_MODEL_PROVIDER",
         "api_key": "LLM_API_KEY",
+        "instruction_model": "LLM_INSTRUCTION_MODEL",
+        "reasoning_model": "LLM_REASONING_MODEL",
         "command_timeout": "COMMAND_TIMEOUT",
         "investigation_enabled": "INVESTIGATION_ENABLED",
         "max_context_files": "MAX_CONTEXT_FILES",
@@ -86,7 +91,31 @@ LLM_BASE_URL: str = _get("base_url")
 LLM_MODEL_NAME: str = _get("model_name")
 LLM_MODEL_PROVIDER: str = _get("model_provider")
 LLM_API_KEY: str = _get("api_key")
+LLM_INSTRUCTION_MODEL: str = _get("instruction_model")
+LLM_REASONING_MODEL: str = _get("reasoning_model")
 COMMAND_TIMEOUT: int = int(_get("command_timeout"))
+
+
+def get_model_name(model_type: str = "instruction") -> str:
+    """Return the model name for the given model type.
+
+    Model types:
+      - "instruction": For general instruction-following tasks (agent, coding, etc.)
+      - "reasoning": For tasks requiring deeper reasoning (currently same as instruction)
+
+    Resolution order:
+      1. If reasoning_model is requested and set, use it
+      2. If instruction_model is set, use it
+      3. If model_name is set, use it
+      4. Empty string (let the backend use its loaded model)
+    """
+    if model_type == "reasoning" and LLM_REASONING_MODEL:
+        return LLM_REASONING_MODEL
+    if LLM_INSTRUCTION_MODEL:
+        return LLM_INSTRUCTION_MODEL
+    return LLM_MODEL_NAME  # May be empty, which is valid for LM Studio
+
+
 INVESTIGATION_ENABLED: bool = _get("investigation_enabled").strip().lower() in {
     "1",
     "true",

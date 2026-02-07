@@ -40,8 +40,10 @@ def _reload_config(env=None, config=None, config_raw=None):
 
     tmpdir = tempfile.mkdtemp()
 
-    raw = config_raw if config_raw is not None else (
-        json.dumps(config) if config is not None else None
+    raw = (
+        config_raw
+        if config_raw is not None
+        else (json.dumps(config) if config is not None else None)
     )
     if raw is not None:
         config_dir = Path(tmpdir) / ".axono"
@@ -58,6 +60,8 @@ def _reload_config(env=None, config=None, config_raw=None):
         "LLM_MODEL_NAME",
         "LLM_MODEL_PROVIDER",
         "LLM_API_KEY",
+        "LLM_INSTRUCTION_MODEL",
+        "LLM_REASONING_MODEL",
         "COMMAND_TIMEOUT",
         "INVESTIGATION_ENABLED",
         "MAX_CONTEXT_FILES",
@@ -93,6 +97,7 @@ class TestGetDataDir:
             if "axono.config" in sys.modules:
                 del sys.modules["axono.config"]
             import axono.config as cfg
+
             importlib.reload(cfg)
 
             # Call _get_data_dir while env var is still set
@@ -115,7 +120,8 @@ class TestDefaults:
 
     def test_default_model_name(self):
         cfg = _reload_config()
-        assert cfg.LLM_MODEL_NAME == "local-model"
+        # Empty by default; allows LM Studio to use its loaded model
+        assert cfg.LLM_MODEL_NAME == ""
 
     def test_default_model_provider(self):
         cfg = _reload_config()
@@ -152,10 +158,12 @@ class TestConfigFile:
     """Values in ~/.axono/config.json override defaults."""
 
     def test_config_overrides_defaults(self):
-        cfg = _reload_config(config={
-            "base_url": "http://localhost:9999/v1",
-            "model_name": "my-model",
-        })
+        cfg = _reload_config(
+            config={
+                "base_url": "http://localhost:9999/v1",
+                "model_name": "my-model",
+            }
+        )
         assert cfg.LLM_BASE_URL == "http://localhost:9999/v1"
         assert cfg.LLM_MODEL_NAME == "my-model"
 
@@ -166,10 +174,12 @@ class TestConfigFile:
         assert cfg.LLM_BASE_URL == "http://192.168.32.1:1234/v1"
 
     def test_config_integer_values(self):
-        cfg = _reload_config(config={
-            "command_timeout": "60",
-            "max_context_files": "20",
-        })
+        cfg = _reload_config(
+            config={
+                "command_timeout": "60",
+                "max_context_files": "20",
+            }
+        )
         assert cfg.COMMAND_TIMEOUT == 60
         assert cfg.MAX_CONTEXT_FILES == 20
 
@@ -186,13 +196,13 @@ class TestConfigFile:
         """Malformed config.json is silently ignored; defaults apply."""
         cfg = _reload_config(config_raw="not valid json{{{")
         assert cfg.LLM_BASE_URL == "http://192.168.32.1:1234/v1"
-        assert cfg.LLM_MODEL_NAME == "local-model"
+        assert cfg.LLM_MODEL_NAME == ""  # Empty default
 
     def test_non_dict_json_falls_back_to_defaults(self):
         """config.json containing a non-dict value is silently ignored."""
         cfg = _reload_config(config_raw=json.dumps(["a", "list"]))
         assert cfg.LLM_BASE_URL == "http://192.168.32.1:1234/v1"
-        assert cfg.LLM_MODEL_NAME == "local-model"
+        assert cfg.LLM_MODEL_NAME == ""  # Empty default
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +248,8 @@ class TestEnvVarOverrides:
     def test_empty_env_var_falls_through(self):
         """An empty env var should not override the default."""
         cfg = _reload_config(env={"LLM_MODEL_NAME": ""})
-        assert cfg.LLM_MODEL_NAME == "local-model"
+        # Default is now empty; empty env var still falls through to default
+        assert cfg.LLM_MODEL_NAME == ""
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +332,81 @@ class TestLoadMcpConfig:
         cfg = _reload_config(env={"HOME": str(tmp_path)})
         result = self._call(cfg, str(tmp_path))
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests for model type configuration (instruction_model / reasoning_model)
+# ---------------------------------------------------------------------------
+
+
+class TestModelTypes:
+    """Tests for instruction_model and reasoning_model configuration."""
+
+    def test_default_instruction_model_empty(self):
+        cfg = _reload_config()
+        assert cfg.LLM_INSTRUCTION_MODEL == ""
+
+    def test_default_reasoning_model_empty(self):
+        cfg = _reload_config()
+        assert cfg.LLM_REASONING_MODEL == ""
+
+    def test_get_model_name_default(self):
+        """When all model configs are empty, returns empty string."""
+        cfg = _reload_config()
+        assert cfg.get_model_name("instruction") == ""
+        assert cfg.get_model_name("reasoning") == ""
+
+    def test_get_model_name_uses_model_name(self):
+        """When only model_name is set, both types use it."""
+        cfg = _reload_config(config={"model_name": "base-model"})
+        assert cfg.get_model_name("instruction") == "base-model"
+        assert cfg.get_model_name("reasoning") == "base-model"
+
+    def test_get_model_name_instruction_model_overrides(self):
+        """instruction_model overrides model_name for both types."""
+        cfg = _reload_config(
+            config={
+                "model_name": "base-model",
+                "instruction_model": "instruct-model",
+            }
+        )
+        assert cfg.get_model_name("instruction") == "instruct-model"
+        assert cfg.get_model_name("reasoning") == "instruct-model"
+
+    def test_get_model_name_reasoning_model_overrides(self):
+        """reasoning_model overrides for reasoning type only."""
+        cfg = _reload_config(
+            config={
+                "model_name": "base-model",
+                "instruction_model": "instruct-model",
+                "reasoning_model": "reason-model",
+            }
+        )
+        assert cfg.get_model_name("instruction") == "instruct-model"
+        assert cfg.get_model_name("reasoning") == "reason-model"
+
+    def test_get_model_name_reasoning_without_instruction(self):
+        """reasoning_model with empty instruction_model falls back to model_name."""
+        cfg = _reload_config(
+            config={
+                "model_name": "base-model",
+                "reasoning_model": "reason-model",
+            }
+        )
+        assert cfg.get_model_name("instruction") == "base-model"
+        assert cfg.get_model_name("reasoning") == "reason-model"
+
+    def test_env_vars_override(self):
+        """Env vars take priority over config file."""
+        cfg = _reload_config(
+            config={
+                "instruction_model": "file-instruct",
+                "reasoning_model": "file-reason",
+            },
+            env={
+                "LLM_INSTRUCTION_MODEL": "env-instruct",
+                "LLM_REASONING_MODEL": "env-reason",
+            },
+        )
+        assert cfg.get_model_name("instruction") == "env-instruct"
+        assert cfg.get_model_name("reasoning") == "env-reason"

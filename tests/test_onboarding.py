@@ -12,7 +12,6 @@ import pytest
 
 from axono.onboarding import OnboardingScreen, _verify_connection
 
-
 # ---------------------------------------------------------------------------
 # Helpers — reload config in an isolated HOME
 # ---------------------------------------------------------------------------
@@ -77,7 +76,9 @@ class TestSaveConfig:
         tmpdir = tempfile.mkdtemp()
         cfg = _reload_config(tmpdir)
         with mock.patch.dict(os.environ, {"HOME": tmpdir}):
-            path = cfg.save_config({"base_url": "http://myhost:1234/v1", "model_name": "m"})
+            path = cfg.save_config(
+                {"base_url": "http://myhost:1234/v1", "model_name": "m"}
+            )
         assert path == Path(tmpdir) / ".axono" / "config.json"
         assert path.is_file()
         data = json.loads(path.read_text())
@@ -306,9 +307,7 @@ class TestOnboardingScreen:
             def on_mount(self):
                 self.push_screen(OnboardingScreen(), callback=results.append)
 
-        with mock.patch(
-            "axono.onboarding._verify_connection"
-        ) as mock_verify:
+        with mock.patch("axono.onboarding._verify_connection") as mock_verify:
             async with TestApp().run_test(size=(80, 30)) as pilot:
                 await pilot.pause()
                 screen = pilot.app.screen
@@ -339,7 +338,9 @@ class TestOnboardingScreen:
             await pilot.pause()
             screen = pilot.app.screen
             assert screen.query_one("#input-url", Input).value == _DEFAULTS["base_url"]
-            assert screen.query_one("#input-model", Input).value == _DEFAULTS["model_name"]
+            assert (
+                screen.query_one("#input-model", Input).value == _DEFAULTS["model_name"]
+            )
             assert screen.query_one("#input-key", Input).value == _DEFAULTS["api_key"]
 
 
@@ -381,8 +382,7 @@ class TestMainOnboarding:
                     await pilot.pause()
                     # The onboarding screen should be on the screen stack
                     assert any(
-                        isinstance(s, OnboardingScreen)
-                        for s in pilot.app.screen_stack
+                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
                     )
 
     @pytest.mark.asyncio
@@ -395,8 +395,7 @@ class TestMainOnboarding:
                 async with AxonoApp().run_test(size=(80, 30)) as pilot:
                     await pilot.pause()
                     assert not any(
-                        isinstance(s, OnboardingScreen)
-                        for s in pilot.app.screen_stack
+                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
                     )
 
     @pytest.mark.asyncio
@@ -411,8 +410,7 @@ class TestMainOnboarding:
                 ) as pilot:
                     await pilot.pause()
                     assert any(
-                        isinstance(s, OnboardingScreen)
-                        for s in pilot.app.screen_stack
+                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
                     )
 
     @pytest.mark.asyncio

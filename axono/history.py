@@ -37,7 +37,9 @@ def save_history(history: list[str]) -> None:
     history_file = _history_file()
     history_file.parent.mkdir(parents=True, exist_ok=True)
     trimmed = history[-MAX_HISTORY:]
-    history_file.write_text("\n".join(trimmed) + "\n" if trimmed else "", encoding="utf-8")
+    history_file.write_text(
+        "\n".join(trimmed) + "\n" if trimmed else "", encoding="utf-8"
+    )
 
 
 def append_to_history(prompt: str) -> list[str]:

@@ -84,7 +84,7 @@ class SystemMessage(Static):
 class ToolGroup(Collapsible):
     """Collapsible group for tool call + result messages.
 
-    Starts expanded, auto-collapses when the next message arrives.
+    Starts collapsed by default, auto-collapses when the next message arrives.
     """
 
     DEFAULT_CSS = """
@@ -104,7 +104,7 @@ class ToolGroup(Collapsible):
     """
 
     def __init__(self, title: str) -> None:
-        super().__init__(title=title, collapsed=False)
+        super().__init__(title=title, collapsed=True)
 
 
 class ChatContainer(ScrollableContainer):

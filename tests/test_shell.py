@@ -19,7 +19,6 @@ from axono.shell import (
     run_shell_pipeline,
 )
 
-
 # ---------------------------------------------------------------------------
 # StepResult dataclass
 # ---------------------------------------------------------------------------
@@ -288,7 +287,9 @@ class TestRunCommand:
         stderr = StringIO()
         with mock.patch("axono.shell.judge_command", side_effect=exploding_judge):
             with mock.patch("sys.stderr", stderr):
-                result = await _run_command("echo fallback", str(tmp_path), unsafe=False)
+                result = await _run_command(
+                    "echo fallback", str(tmp_path), unsafe=False
+                )
 
         assert "fallback" in result.stdout
         assert "safety check failed" in stderr.getvalue()
@@ -323,7 +324,9 @@ class TestPlanNextStep:
 
     @pytest.mark.asyncio
     async def test_returns_parsed_json(self, tmp_path):
-        response = SimpleNamespace(content='{"done": false, "command": "ls", "reason": "list files"}')
+        response = SimpleNamespace(
+            content='{"done": false, "command": "ls", "reason": "list files"}'
+        )
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke.return_value = response
 
@@ -428,14 +431,18 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "echo hello", "reason": "test"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "echo hello", "reason": "test"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -457,7 +464,9 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content=f'{{"done": false, "command": "cd subdir", "reason": "navigate"}}')
+                return SimpleNamespace(
+                    content=f'{{"done": false, "command": "cd subdir", "reason": "navigate"}}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
@@ -482,7 +491,9 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "cd /nonexistent/path", "reason": "test"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "cd /nonexistent/path", "reason": "test"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
@@ -507,7 +518,9 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "rm -rf /", "reason": "clean"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "rm -rf /", "reason": "clean"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
@@ -536,14 +549,18 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "exit 1", "reason": "fail"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "exit 1", "reason": "fail"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -560,14 +577,18 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "true", "reason": "noop"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "true", "reason": "noop"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -579,12 +600,16 @@ class TestRunShellPipeline:
     async def test_max_steps_limit(self, tmp_path):
         """Pipeline stops after max steps."""
         # Always return a command, never done
-        response = SimpleNamespace(content='{"done": false, "command": "true", "reason": "loop"}')
+        response = SimpleNamespace(
+            content='{"done": false, "command": "true", "reason": "loop"}'
+        )
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke.return_value = response
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -609,7 +634,9 @@ class TestRunShellPipeline:
     @pytest.mark.asyncio
     async def test_no_command_yields_error(self, tmp_path):
         """Empty command yields error."""
-        response = SimpleNamespace(content='{"done": false, "command": "", "reason": "oops"}')
+        response = SimpleNamespace(
+            content='{"done": false, "command": "", "reason": "oops"}'
+        )
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke.return_value = response
 
@@ -632,14 +659,18 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "ls", "reason": "list directory"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "ls", "reason": "list directory"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke = fake_ainvoke
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -663,7 +694,9 @@ class TestRunShellPipeline:
         fake_llm.ainvoke = fake_ainvoke
 
         with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.shell.judge_command", return_value={"dangerous": False}):
+            with mock.patch(
+                "axono.shell.judge_command", return_value={"dangerous": False}
+            ):
                 events = []
                 async for ev in run_shell_pipeline("task", str(tmp_path)):
                     events.append(ev)
@@ -682,7 +715,9 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "cd ~", "reason": "go home"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "cd ~", "reason": "go home"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()
@@ -705,7 +740,9 @@ class TestRunShellPipeline:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return SimpleNamespace(content='{"done": false, "command": "rm dangerous", "reason": "test"}')
+                return SimpleNamespace(
+                    content='{"done": false, "command": "rm dangerous", "reason": "test"}'
+                )
             return SimpleNamespace(content='{"done": true, "summary": "Done"}')
 
         fake_llm = mock.AsyncMock()

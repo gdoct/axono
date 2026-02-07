@@ -11,12 +11,12 @@ import subprocess  # nosec B404 -- intentional: shell tool requires subprocess
 import sys
 from dataclasses import dataclass
 from functools import partial
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from axono import config
-from axono.pipeline import get_llm, parse_json, coerce_response_text, truncate
+from axono.pipeline import coerce_response_text, get_llm, parse_json, truncate
 from axono.safety import judge_command
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -186,7 +186,7 @@ async def _plan_next_step(
     history: list[StepResult],
 ) -> dict:
     """Plan the next step based on current state."""
-    llm = get_llm()
+    llm = get_llm("reasoning")
 
     # Build context
     dir_contents, project_type = _get_dir_context(cwd)
@@ -279,23 +279,27 @@ async def run_shell_pipeline(task: str, working_dir: str, unsafe: bool = False):
                 target = os.path.abspath(os.path.join(cwd, target))
             if os.path.isdir(target):
                 cwd = target
-                history.append(StepResult(
-                    command=command,
-                    stdout=f"Changed to {cwd}",
-                    stderr="",
-                    exit_code=0,
-                    success=True,
-                ))
+                history.append(
+                    StepResult(
+                        command=command,
+                        stdout=f"Changed to {cwd}",
+                        stderr="",
+                        exit_code=0,
+                        success=True,
+                    )
+                )
                 yield ("output", f"→ {cwd}")
             else:
                 yield ("error", f"Directory not found: {target}")
-                history.append(StepResult(
-                    command=command,
-                    stdout="",
-                    stderr=f"Directory not found: {target}",
-                    exit_code=1,
-                    success=False,
-                ))
+                history.append(
+                    StepResult(
+                        command=command,
+                        stdout="",
+                        stderr=f"Directory not found: {target}",
+                        exit_code=1,
+                        success=False,
+                    )
+                )
             continue
 
         # Execute the command

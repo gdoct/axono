@@ -1,8 +1,7 @@
 import asyncio
+from typing import cast
 
 import pytest
-
-from typing import cast
 
 from axono import ui
 

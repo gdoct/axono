@@ -58,7 +58,7 @@ class TestHistory:
 
         loaded = hist.load_history()
         assert len(loaded) == hist.MAX_HISTORY
-        assert loaded == prompts[-hist.MAX_HISTORY:]
+        assert loaded == prompts[-hist.MAX_HISTORY :]
 
     def test_load_history_trims_to_max(self, temp_home):
         """load_history returns at most MAX_HISTORY entries."""
@@ -71,7 +71,7 @@ class TestHistory:
 
         loaded = hist.load_history()
         assert len(loaded) == hist.MAX_HISTORY
-        assert loaded == prompts[-hist.MAX_HISTORY:]
+        assert loaded == prompts[-hist.MAX_HISTORY :]
 
     def test_append_to_history(self, temp_home):
         """append_to_history adds a prompt and saves."""
@@ -150,7 +150,9 @@ class TestHistory:
 
         # Mock _history_file to return our test file, then mock read_text to raise
         with mock.patch.object(hist, "_history_file", return_value=history_file):
-            with mock.patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
+            with mock.patch.object(
+                Path, "read_text", side_effect=OSError("Permission denied")
+            ):
                 result = hist.load_history()
 
         assert result == []

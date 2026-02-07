@@ -18,7 +18,6 @@ from textual.widgets import Button, Footer, Input, Label, Static
 
 from axono.config import _DEFAULTS, save_config
 
-
 # ── connection verification (pure I/O, no TUI dependency) ────────
 
 

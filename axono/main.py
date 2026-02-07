@@ -94,15 +94,11 @@ class AxonoApp(App):
         if self._force_onboard or needs_onboarding():
             self.push_screen(OnboardingScreen(), callback=self._on_onboarding_done)
         else:
-            self.run_worker(
-                self._initialize_agent(), name="init-agent", exclusive=True
-            )
+            self.run_worker(self._initialize_agent(), name="init-agent", exclusive=True)
 
     def _on_onboarding_done(self, saved: bool | None) -> None:
         """Called when the onboarding screen is dismissed."""
-        self.run_worker(
-            self._initialize_agent(), name="init-agent", exclusive=True
-        )
+        self.run_worker(self._initialize_agent(), name="init-agent", exclusive=True)
 
     def _parse_agent_data(self, content) -> str:
         if content is None:

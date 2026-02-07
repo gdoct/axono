@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from axono.main import AxonoApp, main, _friendly_tool_name
+from axono.main import AxonoApp, _friendly_tool_name, main
 from axono.ui import (
     AssistantMessage,
     Banner,
@@ -33,7 +33,9 @@ def _app(pilot) -> AxonoApp:
 class TestFriendlyToolName:
 
     def test_shell_tool(self):
-        result = _friendly_tool_name("shell({'task': 'install deps', 'working_dir': '/tmp'})")
+        result = _friendly_tool_name(
+            "shell({'task': 'install deps', 'working_dir': '/tmp'})"
+        )
         assert result == "🔧 Running shell task..."
 
     def test_bash_tool_short_command(self):
@@ -309,9 +311,7 @@ class TestProcessMessage:
                     _app(pilot).message_history = []
                     await _app(pilot)._process_message()
                     chat = _app(pilot).query_one("#chat-container", ChatContainer)
-                    tool_groups = [
-                        c for c in chat.children if isinstance(c, ToolGroup)
-                    ]
+                    tool_groups = [c for c in chat.children if isinstance(c, ToolGroup)]
                     assert len(tool_groups) >= 1
 
     @pytest.mark.asyncio
@@ -329,9 +329,7 @@ class TestProcessMessage:
                     _app(pilot).message_history = []
                     await _app(pilot)._process_message()
                     chat = _app(pilot).query_one("#chat-container", ChatContainer)
-                    tool_groups = [
-                        c for c in chat.children if isinstance(c, ToolGroup)
-                    ]
+                    tool_groups = [c for c in chat.children if isinstance(c, ToolGroup)]
                     assert len(tool_groups) >= 1
                     assert all(tg.collapsed for tg in tool_groups)
 

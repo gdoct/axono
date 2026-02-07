@@ -14,16 +14,20 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from axono import config
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
 
-def get_llm():  # pragma: no cover
-    """Build an LLM instance using centralised config."""
+def get_llm(model_type: str = "instruction"):  # pragma: no cover
+    """Build an LLM instance using centralised config.
+
+    Args:
+        model_type: The type of model to use ("instruction" or "reasoning").
+                    Defaults to "instruction".
+    """
     return init_chat_model(
-        model=config.LLM_MODEL_NAME,
+        model=config.get_model_name(model_type),
         model_provider=config.LLM_MODEL_PROVIDER,
         base_url=config.LLM_BASE_URL,
         api_key=config.LLM_API_KEY,

@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -15,7 +16,6 @@ from axono import config
 from axono.coding import run_coding_pipeline
 from axono.safety import judge_command
 from axono.shell import run_shell_pipeline
-from langchain_community.tools import DuckDuckGoSearchRun
 
 try:
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -86,7 +86,12 @@ async def bash(command: str, unsafe: bool = False) -> str:
             return f"Error: Directory not found: {target}\n__CWD__:{_CURRENT_DIR}"
 
     # Check if command contains cd (we'll need to track the final directory)
-    has_cd = " cd " in f" {cmd} " or cmd.startswith("cd ") or "&&cd " in cmd or "; cd " in cmd
+    has_cd = (
+        " cd " in f" {cmd} "
+        or cmd.startswith("cd ")
+        or "&&cd " in cmd
+        or "; cd " in cmd
+    )
 
     try:
         # Run the command, appending pwd to capture final directory if cd is involved
@@ -251,7 +256,7 @@ async def build_agent(on_status=None):
         on_status: Optional callback that receives status messages (str).
     """
     llm = init_chat_model(
-        model=config.LLM_MODEL_NAME,
+        model=config.get_model_name("instruction"),
         model_provider=config.LLM_MODEL_PROVIDER,
         base_url=config.LLM_BASE_URL,
         api_key=config.LLM_API_KEY,
@@ -282,9 +287,7 @@ async def build_agent(on_status=None):
     return graph
 
 
-async def run_agent(
-    graph, messages
-) -> AsyncGenerator[tuple[str, Any], None]:
+async def run_agent(graph, messages) -> AsyncGenerator[tuple[str, Any], None]:
     """Run the agent and yield UI events after each node completes.
 
     Yields tuples of (event_type, data):

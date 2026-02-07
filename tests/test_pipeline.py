@@ -15,7 +15,6 @@ from axono.pipeline import (
     truncate,
 )
 
-
 # ---------------------------------------------------------------------------
 # coerce_response_text
 # ---------------------------------------------------------------------------
@@ -178,7 +177,9 @@ class TestPlanNextAction:
 
     @pytest.mark.asyncio
     async def test_handles_markdown_fences(self):
-        response = SimpleNamespace(content='```json\n{"done": true, "summary": "ok"}\n```')
+        response = SimpleNamespace(
+            content='```json\n{"done": true, "summary": "ok"}\n```'
+        )
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke.return_value = response
 
@@ -193,7 +194,9 @@ class TestPlanNextAction:
         fake_llm = mock.AsyncMock()
         fake_llm.ainvoke.return_value = response
 
-        with mock.patch("axono.pipeline.get_llm", return_value=fake_llm) as mock_get_llm:
+        with mock.patch(
+            "axono.pipeline.get_llm", return_value=fake_llm
+        ) as mock_get_llm:
             result = await plan_next_action("System", "User")
 
         mock_get_llm.assert_called_once()

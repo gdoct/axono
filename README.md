@@ -28,7 +28,9 @@ It's designed to bring agentic AI capabilities to "normal" hardware. You don't n
 
 ## Warning
 
-This project is not meant to be used on any serious system. Be very careful ho you use it as it is autonomous and will do anything to fulfill the task at hand, which may lead to enexpected results. There are some built-in safeguards - it will ask to confirm before formatting your system drive. But be very careful.
+This project is not meant to be used on any serious system. Be very careful how you use it: it is autonomous and will do *anything* to fulfill the task at hand, which may lead to unexpected results. 
+*It does not give up. *
+There are some built-in safeguards - it will ask to confirm before formatting your system drive. But be very careful.
 
 ## Requirements
 

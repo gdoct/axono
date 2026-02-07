@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from axono.main import AxonoApp, main
+from axono.main import AxonoApp, main, _friendly_tool_name
 from axono.ui import (
     AssistantMessage,
     Banner,
@@ -16,6 +16,66 @@ from axono.ui import (
     ToolGroup,
     UserMessage,
 )
+
+
+# ---------------------------------------------------------------------------
+# _friendly_tool_name
+# ---------------------------------------------------------------------------
+
+
+class TestFriendlyToolName:
+
+    def test_shell_tool(self):
+        result = _friendly_tool_name("shell({'task': 'install deps', 'working_dir': '/tmp'})")
+        assert result == "🔧 Running shell task..."
+
+    def test_bash_tool_short_command(self):
+        result = _friendly_tool_name("bash({'command': 'ls -la'})")
+        assert result == "$ ls -la"
+
+    def test_bash_tool_long_command(self):
+        long_cmd = "cat /very/long/path/to/file/that/exceeds/forty/characters/limit.txt"
+        result = _friendly_tool_name(f"bash({{'command': '{long_cmd}'}})")
+        assert result.startswith("$ cat /very/long/path")
+        assert result.endswith("...")
+        assert len(result) <= 44 + 3  # "$ " + 40 chars + "..."
+
+    def test_bash_tool_malformed_input(self):
+        """Malformed input still parses (just extracts garbage)."""
+        result = _friendly_tool_name("bash(malformed)")
+        # The parsing logic works but extracts a garbled substring
+        assert result.startswith("$ ")
+
+    def test_bash_tool_exception_during_parse(self):
+        """Exception during parsing falls back to $ ..."""
+        from unittest import mock
+
+        # Create a string subclass that raises on slicing
+        class ExplodingStr(str):
+            def __getitem__(self, key):
+                raise RuntimeError("boom")
+
+        # The function starts with startswith which works, but slicing explodes
+        exploding = ExplodingStr("bash({'command': 'ls'})")
+        result = _friendly_tool_name(exploding)
+        assert result == "$ ..."
+
+    def test_code_tool(self):
+        result = _friendly_tool_name("code({'task': 'add tests'})")
+        assert result == "📝 Editing code..."
+
+    def test_duckduckgo_search(self):
+        result = _friendly_tool_name("duckduckgo_search({'query': 'python async'})")
+        assert result == "🔍 Searching web..."
+
+    def test_mcp_tool_with_parens(self):
+        result = _friendly_tool_name("weather({'location': 'NYC'})")
+        assert result == "⚙️ weather..."
+
+    def test_unknown_tool_no_parens(self):
+        result = _friendly_tool_name("some_unknown_tool")
+        assert result == "⚙️ some_unknown_tool..."
+
 
 # ---------------------------------------------------------------------------
 # _parse_agent_data (identical logic to safety._parse_agent_data)

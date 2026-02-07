@@ -195,6 +195,152 @@ class TestBashCd:
 
 
 # ---------------------------------------------------------------------------
+# shell tool
+# ---------------------------------------------------------------------------
+
+
+class TestShellTool:
+    """The shell tool delegates to run_shell_pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_collects_status_and_result(self):
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("status", "$ ls")
+            yield ("output", "file.txt")
+            yield ("result", "Task complete")
+            yield ("cwd", working_dir)
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "list files", "working_dir": "/tmp", "unsafe": False}
+            )
+        assert "$ ls" in result
+        assert "Task complete" in result
+
+    @pytest.mark.asyncio
+    async def test_collects_errors(self):
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("error", "command failed")
+            yield ("cwd", working_dir)
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "do something", "working_dir": "/tmp", "unsafe": False}
+            )
+        assert "Errors:" in result
+        assert "command failed" in result
+
+    @pytest.mark.asyncio
+    async def test_multiple_steps_shows_count(self):
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("status", "$ ls")
+            yield ("output", "a.txt")
+            yield ("status", "$ cat a.txt")
+            yield ("output", "content")
+            yield ("result", "Done")
+            yield ("cwd", working_dir)
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "read files", "working_dir": "/tmp", "unsafe": False}
+            )
+        assert "Ran 2 commands" in result
+
+    @pytest.mark.asyncio
+    async def test_cwd_change_updates_global(self, tmp_path):
+        _reset_cwd(str(tmp_path))
+        new_dir = tmp_path / "subdir"
+        new_dir.mkdir()
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("cwd", str(new_dir))
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "cd subdir", "working_dir": str(tmp_path), "unsafe": False}
+            )
+        assert str(new_dir) in result
+        assert "__CWD__:" in result
+        assert agent._CURRENT_DIR == str(new_dir)
+
+    @pytest.mark.asyncio
+    async def test_same_cwd_not_appended(self):
+        """If cwd doesn't change, no __CWD__ marker is added."""
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("result", "Done")
+            yield ("cwd", "/tmp")  # Same as working_dir
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "noop", "working_dir": "/tmp", "unsafe": False}
+            )
+        assert "__CWD__:" not in result
+
+    @pytest.mark.asyncio
+    async def test_long_output_excluded(self):
+        """Output longer than 200 chars is excluded."""
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("output", "x" * 300)
+            yield ("result", "Done")
+            yield ("cwd", "/tmp")
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "big output", "working_dir": "/tmp", "unsafe": False}
+            )
+        # The long output should NOT be in the result
+        assert "x" * 300 not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_events_returns_done(self):
+        """When no events yield meaningful data, returns '(done)'."""
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("cwd", "/tmp")  # Same as working_dir, doesn't add output
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "noop", "working_dir": "/tmp", "unsafe": False}
+            )
+        assert result == "(done)"
+
+    @pytest.mark.asyncio
+    async def test_multiple_errors_shows_last_two(self):
+        """Only the last 2 errors are shown."""
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("error", "error1")
+            yield ("error", "error2")
+            yield ("error", "error3")
+            yield ("cwd", "/tmp")
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "fail", "working_dir": "/tmp", "unsafe": False}
+            )
+        # Should have error2 and error3, not error1
+        assert "error2" in result
+        assert "error3" in result
+
+    @pytest.mark.asyncio
+    async def test_unsafe_flag_passed(self):
+        """The unsafe flag is passed to run_shell_pipeline."""
+        calls = []
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            calls.append((task, working_dir, unsafe))
+            yield ("cwd", working_dir)
+
+        with mock.patch("axono.agent.run_shell_pipeline", side_effect=fake_pipeline):
+            await agent.shell.ainvoke(
+                {"task": "dangerous", "working_dir": "/tmp", "unsafe": True}
+            )
+        assert calls[0][2] is True  # unsafe=True was passed
+
+
+# ---------------------------------------------------------------------------
 # code tool
 # ---------------------------------------------------------------------------
 

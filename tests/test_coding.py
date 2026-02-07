@@ -1081,3 +1081,309 @@ class TestRunCodingPipeline:
         assert len(result_events) == 1
         assert "Issues found" in result_events[0][1]
         assert "bad code" in result_events[0][1]
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self, tmp_path):
+        """Unknown actions yield error and continue."""
+        action_responses = [
+            json.dumps({"action": "unknown_action", "reason": "test"}),
+            json.dumps({"done": True, "summary": "Gave up"}),
+        ]
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(content=action_responses[min(call_count - 1, 1)])
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "Unknown action" in e[1] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_read_files_action(self, tmp_path):
+        """Test the read_files action."""
+        (tmp_path / "README.md").write_text("# Project")
+        (tmp_path / "extra.py").write_text("print('extra')")
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(content='{"action": "read_files", "files": ["extra.py"], "reason": "need more context"}')
+            return SimpleNamespace(content='{"done": true, "summary": "Read file"}')
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        types = [e[0] for e in events]
+        assert "status" in types
+        # Should have read the file
+        status_events = [e for e in events if e[0] == "status"]
+        assert any("Read" in e[1] or "extra.py" in e[1] for e in status_events)
+
+    @pytest.mark.asyncio
+    async def test_validate_without_plan_fails(self, tmp_path):
+        """Validate action without plan/generated raises error."""
+        action_responses = [
+            json.dumps({"action": "validate", "reason": "check nothing"}),
+            json.dumps({"done": True, "summary": "Gave up"}),
+        ]
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(content=action_responses[min(call_count - 1, 1)])
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "Nothing to validate" in e[1] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_generate_fails_with_no_patches(self, tmp_path):
+        """Generate returns error when no patches generated."""
+        (tmp_path / "README.md").write_text("# Project")
+
+        plan_json = json.dumps({
+            "summary": "Do nothing",
+            "files_to_read": [],
+            "patches": [],
+        })
+        # Generator returns empty array - no patches
+        gen_json = json.dumps([])
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            system_msg = messages[0].content if messages else ""
+
+            if "coding agent that decides what action" in system_msg:
+                if call_count == 1:
+                    return SimpleNamespace(content='{"action": "plan", "reason": "plan"}')
+                elif call_count == 3:
+                    return SimpleNamespace(content='{"action": "generate", "reason": "generate"}')
+                else:
+                    return SimpleNamespace(content='{"done": true, "summary": "Done"}')
+            elif "planning agent" in system_msg:
+                return SimpleNamespace(content=plan_json)
+            elif "code generation agent" in system_msg:
+                return SimpleNamespace(content=gen_json)
+            else:
+                return SimpleNamespace(content='{"done": true, "summary": "Unknown"}')
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.coding.config") as cfg:
+                cfg.MAX_CONTEXT_FILES = 10
+                cfg.MAX_CONTEXT_CHARS = 100_000
+                events = []
+                async for ev in run_coding_pipeline("task", str(tmp_path)):
+                    events.append(ev)
+
+        # Should have an error about no patches
+        assert any(e[0] == "error" and ("No patches" in e[1] or "generate" in e[1].lower()) for e in events)
+
+
+# ---------------------------------------------------------------------------
+# _build_iterative_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildIterativePrompt:
+
+    def test_includes_dir_listing_overflow(self):
+        """Prompt shows +N more when files exceed 30."""
+        from axono.coding import _build_iterative_prompt
+
+        state = {
+            "dir_listing": [f"file{i}.py" for i in range(50)],
+        }
+        prompt = _build_iterative_prompt("task", "/tmp", [], state)
+
+        assert "Project files:" in prompt
+        assert "+20 more" in prompt
+
+    def test_includes_history_with_errors(self):
+        """Prompt shows history with errors."""
+        from axono.coding import _build_iterative_prompt
+
+        history = [
+            {"action": "plan", "success": False, "error": "LLM failed", "reason": "create plan"},
+        ]
+        state = {}
+        prompt = _build_iterative_prompt("task", "/tmp", history, state)
+
+        assert "Recent actions:" in prompt
+        assert "plan" in prompt
+        assert "LLM failed" in prompt or "error" in prompt
+
+    def test_includes_validation_failed(self):
+        """Prompt shows failed validation with issues."""
+        from axono.coding import _build_iterative_prompt, ValidationResult
+
+        state = {
+            "validation": ValidationResult(ok=False, issues=["missing import", "typo"], summary="bad code"),
+        }
+        prompt = _build_iterative_prompt("task", "/tmp", [], state)
+
+        assert "Validation: FAILED" in prompt
+        assert "bad code" in prompt
+        assert "missing import" in prompt
+
+
+# ---------------------------------------------------------------------------
+# generate — edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateEdgeCases:
+
+    @pytest.mark.asyncio
+    async def test_json_object_instead_of_array(self):
+        """Generate returns error when JSON is object instead of array."""
+        from axono.coding import CodingPlan, generate
+
+        gen_json = json.dumps({"path": "a.py", "content": "code"})  # Object, not array
+        llm = _fake_llm(gen_json)
+
+        with mock.patch("axono.coding.get_llm", return_value=llm):
+            result = await generate(CodingPlan(summary="s", patches=[]), [])
+
+        assert result.patches == []
+        assert "Expected JSON array" in result.explanation
+
+
+# ---------------------------------------------------------------------------
+# _handle_read_files
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _plan_next_action
+# ---------------------------------------------------------------------------
+
+
+class TestPlanNextActionCoding:
+
+    @pytest.mark.asyncio
+    async def test_returns_done_on_parse_failure(self):
+        """_plan_next_action returns done when JSON can't be parsed."""
+        from axono.coding import _plan_next_action
+
+        response = SimpleNamespace(content="not valid json at all")
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = response
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            result = await _plan_next_action("task", "/tmp", [], {})
+
+        assert result["done"] is True
+        assert "parse" in result["summary"].lower()
+
+
+# ---------------------------------------------------------------------------
+# run_coding_pipeline — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRunCodingPipelineEdgeCases:
+
+    @pytest.mark.asyncio
+    async def test_planning_exception_yields_error_and_returns(self, tmp_path):
+        """When _plan_next_action raises, pipeline yields error and returns."""
+        with mock.patch(
+            "axono.coding._plan_next_action",
+            side_effect=RuntimeError("LLM connection lost"),
+        ):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "Planning failed" in e[1] for e in events)
+        # Should have returned after the error
+        result_events = [e for e in events if e[0] == "result"]
+        assert len(result_events) == 0  # No result because we returned early
+
+    @pytest.mark.asyncio
+    async def test_empty_action_yields_error(self, tmp_path):
+        """When action is empty string, pipeline yields error."""
+        response = SimpleNamespace(content='{"action": "  ", "reason": "oops"}')
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = response
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            events = []
+            async for ev in run_coding_pipeline("task", str(tmp_path)):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "No action" in e[1] for e in events)
+
+
+class TestHandleReadFiles:
+
+    def test_skips_existing_files(self, tmp_path):
+        """Files already in state are skipped."""
+        from axono.coding import _handle_read_files, FileContent
+
+        (tmp_path / "a.py").write_text("a content")
+
+        state = {
+            "files": [FileContent("a.py", "original content")],
+        }
+
+        result = _handle_read_files(str(tmp_path), ["a.py"], state)
+
+        # Should not duplicate
+        assert len(state["files"]) == 1
+        assert "No new files" in result
+
+    def test_reads_new_files(self, tmp_path):
+        """New files are added to state."""
+        from axono.coding import _handle_read_files, FileContent
+
+        (tmp_path / "new.py").write_text("new content")
+
+        state = {"files": []}
+
+        result = _handle_read_files(str(tmp_path), ["new.py"], state)
+
+        assert len(state["files"]) == 1
+        assert state["files"][0].path == "new.py"
+        assert "Read 1 files" in result
+
+    def test_skips_unreadable_files(self, tmp_path):
+        """Unreadable files are skipped."""
+        from axono.coding import _handle_read_files
+
+        state = {"files": []}
+
+        result = _handle_read_files(str(tmp_path), ["ghost.py"], state)
+
+        assert len(state["files"]) == 0
+        assert "No new files" in result

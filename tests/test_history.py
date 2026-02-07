@@ -138,3 +138,19 @@ class TestHistory:
         """MAX_HISTORY is set to 30."""
         hist, _ = temp_home
         assert hist.MAX_HISTORY == 30
+
+    def test_load_history_oserror(self, temp_home):
+        """load_history returns empty list on OSError."""
+        hist, tmp_path = temp_home
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(parents=True)
+        history_file = axono_dir / "history"
+        history_file.write_text("first\nsecond\n")
+
+        # Mock read_text to raise OSError
+        with mock.patch.object(history_file.__class__, "read_text", side_effect=OSError("Permission denied")):
+            # Need to reload the module to get fresh HISTORY_FILE
+            hist.HISTORY_FILE = history_file
+            result = hist.load_history()
+
+        assert result == []

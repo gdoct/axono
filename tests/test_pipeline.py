@@ -185,3 +185,16 @@ class TestPlanNextAction:
         result = await plan_next_action("System", "User", llm=fake_llm)
         assert result["done"] is True
         assert result["summary"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_creates_llm_when_none_provided(self):
+        """When llm is None, get_llm is called to create one."""
+        response = SimpleNamespace(content='{"action": "test"}')
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke.return_value = response
+
+        with mock.patch("axono.pipeline.get_llm", return_value=fake_llm) as mock_get_llm:
+            result = await plan_next_action("System", "User")
+
+        mock_get_llm.assert_called_once()
+        assert result == {"action": "test"}

@@ -152,6 +152,19 @@ class TestVerifyConnection:
         assert ok is False
         assert "Connection failed" in msg
 
+    def test_unsupported_url_scheme(self):
+        """Unsupported URL schemes are rejected without making a request."""
+        ok, msg = _verify_connection("ftp://localhost:21/v1", "key")
+        assert ok is False
+        assert "Unsupported URL scheme" in msg
+        assert "'ftp'" in msg
+
+    def test_empty_scheme_rejected(self):
+        """URLs without a scheme are rejected."""
+        ok, msg = _verify_connection("localhost:1234/v1", "key")
+        assert ok is False
+        assert "Unsupported URL scheme" in msg
+
 
 # ---------------------------------------------------------------------------
 # OnboardingScreen — TUI tests

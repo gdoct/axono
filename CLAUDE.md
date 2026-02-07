@@ -32,7 +32,7 @@ pytest tests/test_coding.py::TestInvestigate::test_score_file_keyword_match -v
 uv pip install -r requirements.txt
 ```
 
-No linter or formatter is configured in pyproject.toml, but the project follows Black/isort style conventions.
+Black (formatter) and isort (import sorter) are configured in `pyproject.toml`. Run `black .` and `isort .` to format code.
 
 ## Architecture
 
@@ -64,5 +64,6 @@ Textual framework. `AxonoApp` manages the chat interface. Agent streams updates 
 - **Async throughout**: Agent streaming, LLM calls (`ainvoke`), and TUI workers all use async/await.
 - **JSON interchange between pipeline stages**: Tolerates markdown fences in LLM output; has fallback parsing for malformed responses.
 - **Minimal change principle**: When editing code, follow existing style and avoid unrelated refactors.
-- **Tests mirror source structure**: Each `axono/*.py` has a corresponding `tests/test_*.py`. Tests use mocked LLM responses and isolated temp directories for config.
+- **Tests mirror source structure**: Each `axono/*.py` has a corresponding `tests/test_*.py`. Tests use mocked LLM responses and isolated temp directories for config. 
+Important: Test coverage must be 100% for *all* code in the `axono` package, including error handling paths. Use `pytest --cov=axono` to check.
 - **`langchain` is pinned to 1.2.8** in requirements.txt; other deps float.

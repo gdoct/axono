@@ -6,3 +6,7 @@ python-dotenv
 langchain-community 
 duckduckgo-search
 ddgs
+black
+isort
+pytest
+pytest-cov

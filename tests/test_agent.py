@@ -666,7 +666,10 @@ class TestRunAgent:
         mock_llm_response = AIMessage(content="Hello!")
 
         with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
-            with mock.patch("axono.agent.init_chat_model") as mock_init:
+            # Patch at the source since it's imported inside the function
+            with mock.patch(
+                "langchain.chat_models.init_chat_model"
+            ) as mock_init:
                 mock_llm = mock.AsyncMock()
                 mock_llm.ainvoke.return_value = mock_llm_response
                 mock_init.return_value = mock_llm
@@ -786,7 +789,9 @@ class TestRunAgent:
             return mock_intent
 
         with mock.patch("axono.agent.analyze_intent", side_effect=capture_intent):
-            with mock.patch("axono.agent.init_chat_model") as mock_init:
+            with mock.patch(
+                "langchain.chat_models.init_chat_model"
+            ) as mock_init:
                 mock_llm = mock.AsyncMock()
                 mock_llm.ainvoke.return_value = AIMessage(content="Hi")
                 mock_init.return_value = mock_llm
@@ -851,7 +856,9 @@ class TestRunAgent:
         with mock.patch(
             "axono.agent.analyze_intent", return_value=mock_intent
         ) as mock_analyze:
-            with mock.patch("axono.agent.init_chat_model") as mock_init:
+            with mock.patch(
+                "langchain.chat_models.init_chat_model"
+            ) as mock_init:
                 from langchain_core.messages import AIMessage
 
                 mock_llm = mock.AsyncMock()

@@ -29,8 +29,16 @@ _DEFAULTS = {
     "max_context_chars": "30000",
 }
 
-# ── read ~/.axono/config.json ─────────────────────────────────────────
-_config_dir = Path.home() / ".axono"
+# ── data directory (configurable via AXONO_DATA_DIR) ──────────────────
+def _get_data_dir() -> Path:
+    """Return the data directory, respecting AXONO_DATA_DIR env var."""
+    env_dir = os.environ.get("AXONO_DATA_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path.home() / ".axono"
+
+
+_config_dir = _get_data_dir()
 _config_path = _config_dir / "config.json"
 
 _file_cfg: dict = {}
@@ -91,7 +99,7 @@ MAX_CONTEXT_CHARS: int = int(_get("max_context_chars"))
 
 # ── MCP server configuration ────────────────────────────────────────
 def load_mcp_config() -> dict:
-    """Load MCP server configuration from ``~/.axono/mcp.json``.
+    """Load MCP server configuration from the data directory.
 
     The file path can be overridden via the ``MCP_CONFIG_PATH`` env var.
     Returns the ``"servers"`` dict suitable for ``MultiServerMCPClient``,
@@ -99,7 +107,7 @@ def load_mcp_config() -> dict:
     """
     candidates = [
         os.environ.get("MCP_CONFIG_PATH", ""),
-        str(Path.home() / ".axono" / "mcp.json"),
+        str(_get_data_dir() / "mcp.json"),
     ]
     for candidate in candidates:
         if not candidate:
@@ -130,8 +138,8 @@ def load_mcp_config() -> dict:
 
 
 def config_dir() -> Path:
-    """Return the canonical path to ``~/.axono/``."""
-    return Path.home() / ".axono"
+    """Return the data directory path, respecting AXONO_DATA_DIR env var."""
+    return _get_data_dir()
 
 
 def config_path() -> Path:

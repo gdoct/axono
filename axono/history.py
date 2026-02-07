@@ -1,12 +1,16 @@
 """Prompt history management for Axono.
 
-Stores up to MAX_HISTORY prompts in ~/.axono/history, one per line.
+Stores up to MAX_HISTORY prompts in the data directory, one per line.
 """
 
-from pathlib import Path
+from axono.config import config_dir
 
 MAX_HISTORY = 30
-HISTORY_FILE = Path.home() / ".axono" / "history"
+
+
+def _history_file():
+    """Return the path to the history file."""
+    return config_dir() / "history"
 
 
 def load_history() -> list[str]:
@@ -14,10 +18,11 @@ def load_history() -> list[str]:
 
     Returns a list of prompts (oldest first), or empty list if no history.
     """
-    if not HISTORY_FILE.is_file():
+    history_file = _history_file()
+    if not history_file.is_file():
         return []
     try:
-        text = HISTORY_FILE.read_text(encoding="utf-8")
+        text = history_file.read_text(encoding="utf-8")
         lines = [line for line in text.splitlines() if line.strip()]
         return lines[-MAX_HISTORY:]
     except OSError:
@@ -29,9 +34,10 @@ def save_history(history: list[str]) -> None:
 
     Keeps only the last MAX_HISTORY entries.
     """
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    history_file = _history_file()
+    history_file.parent.mkdir(parents=True, exist_ok=True)
     trimmed = history[-MAX_HISTORY:]
-    HISTORY_FILE.write_text("\n".join(trimmed) + "\n" if trimmed else "", encoding="utf-8")
+    history_file.write_text("\n".join(trimmed) + "\n" if trimmed else "", encoding="utf-8")
 
 
 def append_to_history(prompt: str) -> list[str]:

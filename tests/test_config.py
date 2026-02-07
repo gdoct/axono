@@ -76,6 +76,32 @@ def _reload_config(env=None, config=None, config_raw=None):
 
 
 # ---------------------------------------------------------------------------
+# Tests for _get_data_dir (AXONO_DATA_DIR support for Docker)
+# ---------------------------------------------------------------------------
+
+
+class TestGetDataDir:
+    """Test custom data directory via AXONO_DATA_DIR env var."""
+
+    def test_axono_data_dir_env_var(self):
+        """AXONO_DATA_DIR overrides default ~/.axono location."""
+        import importlib
+        from pathlib import Path
+
+        # Reload with AXONO_DATA_DIR set
+        with mock.patch.dict(os.environ, {"AXONO_DATA_DIR": "/custom/data/path"}):
+            if "axono.config" in sys.modules:
+                del sys.modules["axono.config"]
+            import axono.config as cfg
+            importlib.reload(cfg)
+
+            # Call _get_data_dir while env var is still set
+            result = cfg._get_data_dir()
+
+        assert result == Path("/custom/data/path")
+
+
+# ---------------------------------------------------------------------------
 # Tests for default values
 # ---------------------------------------------------------------------------
 

@@ -18,13 +18,14 @@ class TestHistory:
             import importlib
             import sys
 
-            if "axono.history" in sys.modules:
-                del sys.modules["axono.history"]
+            # Clear both config and history modules so they pick up new HOME
+            for mod in ("axono.config", "axono.history"):
+                if mod in sys.modules:
+                    del sys.modules[mod]
 
             import axono.history as hist
 
-            # Patch the module constants for this test
-            hist.HISTORY_FILE = tmp_path / ".axono" / "history"
+            importlib.reload(hist)
             yield hist, tmp_path
 
     def test_load_history_empty_when_no_file(self, temp_home):
@@ -147,10 +148,9 @@ class TestHistory:
         history_file = axono_dir / "history"
         history_file.write_text("first\nsecond\n")
 
-        # Mock read_text to raise OSError
-        with mock.patch.object(history_file.__class__, "read_text", side_effect=OSError("Permission denied")):
-            # Need to reload the module to get fresh HISTORY_FILE
-            hist.HISTORY_FILE = history_file
-            result = hist.load_history()
+        # Mock _history_file to return our test file, then mock read_text to raise
+        with mock.patch.object(hist, "_history_file", return_value=history_file):
+            with mock.patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
+                result = hist.load_history()
 
         assert result == []

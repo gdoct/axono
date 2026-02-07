@@ -62,101 +62,101 @@ class TestDetectProjectType:
     def test_python_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
         result = _detect_project_type(str(tmp_path))
-        assert "Python" in result
+        assert result is not None and "Python" in result
         assert "pip" in result
 
     def test_python_requirements(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("requests")
         result = _detect_project_type(str(tmp_path))
-        assert "Python" in result
+        assert result is not None and "Python" in result
 
     def test_python_setup_py(self, tmp_path):
         (tmp_path / "setup.py").write_text("from setuptools import setup")
         result = _detect_project_type(str(tmp_path))
-        assert "Python" in result
+        assert result is not None and "Python" in result
 
     def test_rust_cargo(self, tmp_path):
         (tmp_path / "Cargo.toml").write_text("[package]\nname = 'test'")
         result = _detect_project_type(str(tmp_path))
-        assert "Rust" in result
+        assert result is not None and "Rust" in result
         assert "cargo" in result
 
     def test_nodejs_package_json(self, tmp_path):
         (tmp_path / "package.json").write_text('{"name": "test"}')
         result = _detect_project_type(str(tmp_path))
-        assert "Node.js" in result
+        assert result is not None and "Node.js" in result
         assert "npm" in result
 
     def test_makefile(self, tmp_path):
         (tmp_path / "Makefile").write_text("all:\n\techo hello")
         result = _detect_project_type(str(tmp_path))
-        assert "Make" in result
+        assert result is not None and "Make" in result
 
     def test_cmake(self, tmp_path):
         (tmp_path / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.10)")
         result = _detect_project_type(str(tmp_path))
-        assert "CMake" in result
+        assert result is not None and "CMake" in result
 
     def test_go_mod(self, tmp_path):
         (tmp_path / "go.mod").write_text("module example.com/test")
         result = _detect_project_type(str(tmp_path))
-        assert "Go" in result
+        assert result is not None and "Go" in result
 
     def test_java_maven(self, tmp_path):
         (tmp_path / "pom.xml").write_text("<project></project>")
         result = _detect_project_type(str(tmp_path))
-        assert "Maven" in result
+        assert result is not None and "Maven" in result
 
     def test_java_gradle(self, tmp_path):
         (tmp_path / "build.gradle").write_text("plugins {}")
         result = _detect_project_type(str(tmp_path))
-        assert "Gradle" in result
+        assert result is not None and "Gradle" in result
 
     def test_kotlin_gradle(self, tmp_path):
         (tmp_path / "build.gradle.kts").write_text("plugins {}")
         result = _detect_project_type(str(tmp_path))
-        assert "Gradle" in result
+        assert result is not None and "Gradle" in result
 
     def test_ruby_gemfile(self, tmp_path):
         (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'")
         result = _detect_project_type(str(tmp_path))
-        assert "Ruby" in result
+        assert result is not None and "Ruby" in result
 
     def test_php_composer(self, tmp_path):
         (tmp_path / "composer.json").write_text('{"name": "test"}')
         result = _detect_project_type(str(tmp_path))
-        assert "PHP" in result
+        assert result is not None and "PHP" in result
 
     def test_elixir_mix(self, tmp_path):
         (tmp_path / "mix.exs").write_text("defmodule Test.MixProject")
         result = _detect_project_type(str(tmp_path))
-        assert "Elixir" in result
+        assert result is not None and "Elixir" in result
 
     def test_haskell_stack(self, tmp_path):
         (tmp_path / "stack.yaml").write_text("resolver: lts-19.0")
         result = _detect_project_type(str(tmp_path))
-        assert "Haskell" in result
+        assert result is not None and "Haskell" in result
 
     def test_ocaml_dune(self, tmp_path):
         (tmp_path / "dune-project").write_text("(lang dune 3.0)")
         result = _detect_project_type(str(tmp_path))
-        assert "OCaml" in result
+        assert result is not None and "OCaml" in result
 
     def test_swift_package(self, tmp_path):
         (tmp_path / "Package.swift").write_text("// swift-tools-version:5.5")
         result = _detect_project_type(str(tmp_path))
-        assert "Swift" in result
+        assert result is not None and "Swift" in result
 
     def test_dotnet_csproj(self, tmp_path):
         (tmp_path / "MyApp.csproj").write_text("<Project></Project>")
         result = _detect_project_type(str(tmp_path))
-        assert ".NET" in result
+        assert result is not None and ".NET" in result
         assert "dotnet" in result
 
     def test_dotnet_sln(self, tmp_path):
         (tmp_path / "MySolution.sln").write_text("Microsoft Visual Studio Solution")
         result = _detect_project_type(str(tmp_path))
-        assert ".NET" in result
+        assert result is not None and ".NET" in result
 
     def test_no_project_files(self, tmp_path):
         (tmp_path / "random.txt").write_text("just text")

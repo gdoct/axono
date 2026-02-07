@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -12,10 +13,16 @@ from axono.ui import (
     Banner,
     ChatContainer,
     CwdStatus,
+    HistoryInput,
     SystemMessage,
     ToolGroup,
     UserMessage,
 )
+
+
+def _app(pilot) -> AxonoApp:
+    """Cast pilot.app to AxonoApp for type checking."""
+    return cast(AxonoApp, pilot.app)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ class TestAppInit:
 
     def test_bindings(self):
         app = AxonoApp()
-        keys = [b.key for b in app.BINDINGS]
+        keys = [b.key if hasattr(b, "key") else b[0] for b in app.BINDINGS]  # type: ignore[union-attr]
         assert "ctrl+c" in keys
         assert "ctrl+l" in keys
 
@@ -147,7 +154,7 @@ class TestCompose:
     async def test_input_has_focus_on_mount(self):
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                inp = pilot.app.query_one("#input-area")
+                inp = _app(pilot).query_one("#input-area", HistoryInput)
                 assert inp.has_focus
 
 
@@ -169,8 +176,8 @@ class TestInitializeAgent:
             with mock.patch("axono.main.build_agent", side_effect=fake_build):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
                     await pilot.pause(delay=0.5)
-                    assert pilot.app.agent_graph is fake_graph
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    assert _app(pilot).agent_graph is fake_graph
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     children = list(chat.children)
                     # Should contain Banner + "Agent initialized" SystemMessage
                     sys_msgs = [c for c in children if isinstance(c, SystemMessage)]
@@ -187,7 +194,7 @@ class TestInitializeAgent:
             with mock.patch("axono.main.build_agent", side_effect=fake_build):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
                     await pilot.pause(delay=0.5)
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     children = list(chat.children)
                     sys_msgs = [c for c in children if isinstance(c, SystemMessage)]
                     # Banner + "Agent initialized" + MCP status
@@ -202,7 +209,7 @@ class TestInitializeAgent:
             with mock.patch("axono.main.build_agent", side_effect=failing_build):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
                     await pilot.pause(delay=0.5)
-                    assert pilot.app.agent_graph is None
+                    assert _app(pilot).agent_graph is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +223,13 @@ class TestInputSubmitted:
     async def test_empty_input_ignored(self):
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                pilot.app.agent_graph = object()
-                inp = pilot.app.query_one("#input-area")
+                _app(pilot).agent_graph = cast(Any, object())
+                inp = _app(pilot).query_one("#input-area", HistoryInput)
                 inp.value = "   "
                 await inp.action_submit()
                 await pilot.pause()
                 # No user message should be added
-                chat = pilot.app.query_one("#chat-container", ChatContainer)
+                chat = _app(pilot).query_one("#chat-container", ChatContainer)
                 user_msgs = [c for c in chat.children if isinstance(c, UserMessage)]
                 assert len(user_msgs) == 0
 
@@ -234,16 +241,16 @@ class TestInputSubmitted:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", side_effect=noop_run_agent):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app._is_processing = False
-                    inp = pilot.app.query_one("#input-area")
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot)._is_processing = False
+                    inp = _app(pilot).query_one("#input-area", HistoryInput)
                     inp.value = "hello agent"
                     await inp.action_submit()
                     await pilot.pause()
                     # Input should be cleared
                     assert inp.value == ""
                     # User message added
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     user_msgs = [c for c in chat.children if isinstance(c, UserMessage)]
                     assert len(user_msgs) == 1
 
@@ -251,14 +258,14 @@ class TestInputSubmitted:
     async def test_rejects_input_while_processing(self):
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                pilot.app.agent_graph = object()
-                pilot.app._is_processing = True
-                inp = pilot.app.query_one("#input-area")
+                _app(pilot).agent_graph = cast(Any, object())
+                _app(pilot)._is_processing = True
+                inp = _app(pilot).query_one("#input-area", HistoryInput)
                 inp.value = "test"
                 await inp.action_submit()
                 await pilot.pause()
                 # No user message added since we're busy
-                chat = pilot.app.query_one("#chat-container", ChatContainer)
+                chat = _app(pilot).query_one("#chat-container", ChatContainer)
                 user_msgs = [c for c in chat.children if isinstance(c, UserMessage)]
                 assert len(user_msgs) == 0
 
@@ -280,10 +287,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     asst_msgs = [
                         c for c in chat.children if isinstance(c, AssistantMessage)
                     ]
@@ -298,10 +305,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     tool_groups = [
                         c for c in chat.children if isinstance(c, ToolGroup)
                     ]
@@ -318,10 +325,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     tool_groups = [
                         c for c in chat.children if isinstance(c, ToolGroup)
                     ]
@@ -337,10 +344,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    assert pilot.app._cwd == "/tmp/project"
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    assert _app(pilot)._cwd == "/tmp/project"
 
     @pytest.mark.asyncio
     async def test_tool_result_cwd_only_no_output_message(self):
@@ -353,10 +360,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    assert pilot.app._cwd == "/home/user"
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    assert _app(pilot)._cwd == "/home/user"
 
     @pytest.mark.asyncio
     async def test_error_event(self):
@@ -367,10 +374,10 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=fake_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    chat = pilot.app.query_one("#chat-container", ChatContainer)
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
                     sys_msgs = [
                         c for c in chat.children if isinstance(c, SystemMessage)
                     ]
@@ -397,20 +404,20 @@ class TestProcessMessage:
 
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                pilot.app.agent_graph = object()
-                pilot.app.message_history = [{"role": "user", "content": "hi"}]
+                _app(pilot).agent_graph = cast(Any, object())
+                _app(pilot).message_history = [{"role": "user", "content": "hi"}]
                 with mock.patch("axono.main.run_agent", new=fake_run):
-                    await pilot.app._process_message()
+                    await _app(pilot)._process_message()
                 assert call_log == ["called"]
-                assert pilot.app.message_history == updated
+                assert _app(pilot).message_history == updated
 
     @pytest.mark.asyncio
     async def test_agent_not_initialized(self):
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                pilot.app.agent_graph = None
-                pilot.app.message_history = []
-                await pilot.app._process_message()
+                _app(pilot).agent_graph = None
+                _app(pilot).message_history = []
+                await _app(pilot)._process_message()
                 # Should not crash, just show error message
 
     @pytest.mark.asyncio
@@ -422,11 +429,11 @@ class TestProcessMessage:
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             with mock.patch("axono.main.run_agent", new=exploding_run):
                 async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                    pilot.app.agent_graph = object()
-                    pilot.app._is_processing = True
-                    pilot.app.message_history = []
-                    await pilot.app._process_message()
-                    assert pilot.app._is_processing is False
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot)._is_processing = True
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    assert _app(pilot)._is_processing is False
 
 
 # ---------------------------------------------------------------------------
@@ -440,11 +447,11 @@ class TestActionClear:
     async def test_clears_chat_and_history(self):
         with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
             async with AxonoApp().run_test(size=(80, 24)) as pilot:
-                pilot.app.message_history = [{"role": "user", "content": "hi"}]
-                pilot.app.action_clear()
+                _app(pilot).message_history = [{"role": "user", "content": "hi"}]
+                _app(pilot).action_clear()
                 await pilot.pause()
-                assert pilot.app.message_history == []
-                chat = pilot.app.query_one("#chat-container", ChatContainer)
+                assert _app(pilot).message_history == []
+                chat = _app(pilot).query_one("#chat-container", ChatContainer)
                 assert len(list(chat.children)) == 0
 
 

@@ -116,10 +116,10 @@ class TestHistoryInput:
             prevented = False
             stopped = False
 
-            def prevent_default(self):
+            def prevent_default(self):  # pragma: no cover
                 self.prevented = True
 
-            def stop(self):
+            def stop(self):  # pragma: no cover
                 self.stopped = True
 
         event = FakeEvent()
@@ -136,11 +136,10 @@ class TestHistoryInput:
 
         class TestApp(App):
             def compose(self):
-                self.hist_input = ui.HistoryInput()
-                yield self.hist_input
+                yield ui.HistoryInput(id="hist")
 
         async with TestApp().run_test(size=(80, 24)) as pilot:
-            inp = pilot.app.hist_input
+            inp = pilot.app.query_one("#hist", ui.HistoryInput)
             inp._history = ["first", "second", "third"]
             inp._history_index = -1
             inp.value = "current"
@@ -158,11 +157,10 @@ class TestHistoryInput:
 
         class TestApp(App):
             def compose(self):
-                self.hist_input = ui.HistoryInput()
-                yield self.hist_input
+                yield ui.HistoryInput(id="hist")
 
         async with TestApp().run_test(size=(80, 24)) as pilot:
-            inp = pilot.app.hist_input
+            inp = pilot.app.query_one("#hist", ui.HistoryInput)
             inp._history = ["first", "second", "third"]
             inp._history_index = 2
             inp._current_input = "saved"
@@ -180,11 +178,10 @@ class TestHistoryInput:
 
         class TestApp(App):
             def compose(self):
-                self.hist_input = ui.HistoryInput()
-                yield self.hist_input
+                yield ui.HistoryInput(id="hist")
 
         async with TestApp().run_test(size=(80, 24)) as pilot:
-            inp = pilot.app.hist_input
+            inp = pilot.app.query_one("#hist", ui.HistoryInput)
             inp._history = ["first", "second"]
             inp._history_index = 0
             inp._current_input = "saved"
@@ -207,10 +204,10 @@ class TestHistoryInput:
             prevented = False
             stopped = False
 
-            def prevent_default(self):
+            def prevent_default(self):  # pragma: no cover
                 self.prevented = True
 
-            def stop(self):
+            def stop(self):  # pragma: no cover
                 self.stopped = True
 
         event = FakeEvent()
@@ -227,11 +224,10 @@ class TestHistoryInput:
 
         class TestApp(App):
             def compose(self):
-                self.hist_input = ui.HistoryInput()
-                yield self.hist_input
+                yield ui.HistoryInput(id="hist")
 
         async with TestApp().run_test(size=(80, 24)) as pilot:
-            inp = pilot.app.hist_input
+            inp = pilot.app.query_one("#hist", ui.HistoryInput)
             inp._history = ["first", "second", "third"]
             inp._history_index = 0
             inp._current_input = "saved"
@@ -249,11 +245,10 @@ class TestHistoryInput:
 
         class TestApp(App):
             def compose(self):
-                self.hist_input = ui.HistoryInput()
-                yield self.hist_input
+                yield ui.HistoryInput(id="hist")
 
         async with TestApp().run_test(size=(80, 24)) as pilot:
-            inp = pilot.app.hist_input
+            inp = pilot.app.query_one("#hist", ui.HistoryInput)
             inp._history = ["first", "second"]
             inp._history_index = 1  # At "second"
             inp._current_input = "my typed text"
@@ -274,10 +269,10 @@ class TestHistoryInput:
             prevented = False
             stopped = False
 
-            def prevent_default(self):
+            def prevent_default(self):  # pragma: no cover
                 self.prevented = True
 
-            def stop(self):
+            def stop(self):  # pragma: no cover
                 self.stopped = True
 
         event = FakeEvent()

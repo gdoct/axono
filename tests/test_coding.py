@@ -13,8 +13,6 @@ from axono.coding import (
     FileContent,
     FilePatch,
     GeneratedCode,
-    InvestigationResult,
-    ValidationResult,
     _dedupe_file_contents,
     _extension_weight,
     _read_file,
@@ -866,7 +864,7 @@ class TestRunCodingPipeline:
                 return SimpleNamespace(content=gen_json)
             elif "validation agent" in system_msg:
                 return SimpleNamespace(content=validate_json)
-            else:
+            else:  # pragma: no cover
                 # Default fallback
                 return SimpleNamespace(content='{"done": true, "summary": "Unknown call"}')
 
@@ -1063,7 +1061,7 @@ class TestRunCodingPipeline:
                 return SimpleNamespace(content=gen_json)
             elif "validation agent" in system_msg:
                 return SimpleNamespace(content=validate_json)
-            else:
+            else:  # pragma: no cover
                 return SimpleNamespace(content='{"done": true, "summary": "Unknown"}')
 
         fake_llm = mock.AsyncMock()
@@ -1192,7 +1190,7 @@ class TestRunCodingPipeline:
                 return SimpleNamespace(content=plan_json)
             elif "code generation agent" in system_msg:
                 return SimpleNamespace(content=gen_json)
-            else:
+            else:  # pragma: no cover
                 return SimpleNamespace(content='{"done": true, "summary": "Unknown"}')
 
         fake_llm = mock.AsyncMock()

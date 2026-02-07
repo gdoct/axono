@@ -4,10 +4,10 @@ from textual.widgets import Collapsible, Input, Static
 from axono.history import append_to_history, load_history
 
 BANNER_TEXT = r"""
-    _
+_____________________________________
    / \   __  __  ___   _ __    ___
   / _ \  \ \/ / / _ \ | '_ \  / _ \
- / ___ \  >  < | (_) || | | || (_) |
+  / ___ \  >  < | (_) || | | || (_) |
 /_/   \_\/_/\_\ \___/ |_| |_| \___/
 """
 
@@ -152,7 +152,9 @@ class ChatContainer(ScrollableContainer):
         groups = list(self.query(ToolGroup))
         if groups:
             group = groups[-1]
-            await group.mount(content_widget)
+            # Mount to the Contents widget inside the Collapsible
+            contents = group.query_one("Contents")
+            await contents.mount(content_widget)
             content_widget.scroll_visible(animate=False)
         else:
             await self.add_message(content_widget)

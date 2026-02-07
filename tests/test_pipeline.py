@@ -8,11 +8,17 @@ import pytest
 
 from axono.pipeline import (
     ActionResult,
+    ExecutionResult,
+    FinalValidation,
     PipelineContext,
+    PlanStep,
+    PlanValidation,
+    StepExecution,
     coerce_response_text,
     parse_json,
     plan_next_action,
     truncate,
+    validate_plan,
 )
 
 # ---------------------------------------------------------------------------
@@ -201,3 +207,270 @@ class TestPlanNextAction:
 
         mock_get_llm.assert_called_once()
         assert result == {"action": "test"}
+
+
+# ---------------------------------------------------------------------------
+# PlanStep
+# ---------------------------------------------------------------------------
+
+
+class TestPlanStep:
+
+    def test_defaults(self):
+        step = PlanStep(description="Install deps")
+        assert step.description == "Install deps"
+        assert step.action == {}
+
+    def test_with_action(self):
+        step = PlanStep(
+            description="Run build",
+            action={"command": "npm run build"},
+        )
+        assert step.description == "Run build"
+        assert step.action == {"command": "npm run build"}
+
+
+# ---------------------------------------------------------------------------
+# PlanValidation
+# ---------------------------------------------------------------------------
+
+
+class TestPlanValidation:
+
+    def test_defaults(self):
+        val = PlanValidation(valid=True)
+        assert val.valid is True
+        assert val.issues == []
+        assert val.suggestions == []
+        assert val.summary == ""
+
+    def test_with_issues(self):
+        val = PlanValidation(
+            valid=False,
+            issues=["missing step"],
+            suggestions=["add cleanup"],
+            summary="incomplete",
+        )
+        assert val.valid is False
+        assert val.issues == ["missing step"]
+        assert val.suggestions == ["add cleanup"]
+        assert val.summary == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# StepExecution
+# ---------------------------------------------------------------------------
+
+
+class TestStepExecution:
+
+    def test_defaults(self):
+        step = PlanStep(description="test")
+        exec_result = StepExecution(step=step, success=True)
+        assert exec_result.step is step
+        assert exec_result.success is True
+        assert exec_result.output == ""
+        assert exec_result.error == ""
+
+    def test_with_error(self):
+        step = PlanStep(description="test")
+        exec_result = StepExecution(
+            step=step,
+            success=False,
+            output="partial",
+            error="command failed",
+        )
+        assert exec_result.success is False
+        assert exec_result.output == "partial"
+        assert exec_result.error == "command failed"
+
+
+# ---------------------------------------------------------------------------
+# ExecutionResult
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionResult:
+
+    def test_defaults(self):
+        result = ExecutionResult(success=True)
+        assert result.success is True
+        assert result.step_results == []
+        assert result.summary == ""
+
+    def test_with_steps(self):
+        step1 = PlanStep(description="step1")
+        step2 = PlanStep(description="step2")
+        exec1 = StepExecution(step=step1, success=True)
+        exec2 = StepExecution(step=step2, success=True)
+
+        result = ExecutionResult(
+            success=True,
+            step_results=[exec1, exec2],
+            summary="all done",
+        )
+        assert len(result.step_results) == 2
+        assert result.summary == "all done"
+
+
+# ---------------------------------------------------------------------------
+# FinalValidation
+# ---------------------------------------------------------------------------
+
+
+class TestFinalValidation:
+
+    def test_defaults(self):
+        val = FinalValidation(ok=True)
+        assert val.ok is True
+        assert val.issues == []
+        assert val.summary == ""
+
+    def test_with_issues(self):
+        val = FinalValidation(
+            ok=False,
+            issues=["syntax error", "missing import"],
+            summary="code has problems",
+        )
+        assert val.ok is False
+        assert len(val.issues) == 2
+        assert val.summary == "code has problems"
+
+
+# ---------------------------------------------------------------------------
+# validate_plan
+# ---------------------------------------------------------------------------
+
+
+def _fake_llm(content):
+    """Return a mock LLM whose ``ainvoke`` resolves to the given content."""
+    response = SimpleNamespace(content=content)
+    llm = mock.AsyncMock()
+    llm.ainvoke.return_value = response
+    return llm
+
+
+class TestValidatePlan:
+
+    @pytest.mark.asyncio
+    async def test_valid_plan(self):
+        resp = json.dumps(
+            {
+                "valid": True,
+                "issues": [],
+                "suggestions": [],
+                "summary": "Plan looks good",
+            }
+        )
+        llm = _fake_llm(resp)
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Build the project",
+                plan_summary="Install deps and build",
+                steps=[
+                    PlanStep(description="Install dependencies"),
+                    PlanStep(description="Run build"),
+                ],
+            )
+
+        assert result.valid is True
+        assert result.summary == "Plan looks good"
+
+    @pytest.mark.asyncio
+    async def test_invalid_plan(self):
+        resp = json.dumps(
+            {
+                "valid": False,
+                "issues": ["Missing test step"],
+                "suggestions": ["Add a test command after build"],
+                "summary": "Plan incomplete",
+            }
+        )
+        llm = _fake_llm(resp)
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Build and test the project",
+                plan_summary="Just build",
+                steps=[
+                    PlanStep(description="Run build"),
+                ],
+            )
+
+        assert result.valid is False
+        assert "Missing test step" in result.issues
+        assert len(result.suggestions) == 1
+
+    @pytest.mark.asyncio
+    async def test_with_context(self):
+        resp = json.dumps(
+            {
+                "valid": True,
+                "issues": [],
+                "suggestions": [],
+                "summary": "OK",
+            }
+        )
+        llm = _fake_llm(resp)
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Build project",
+                plan_summary="Build with cargo",
+                steps=[PlanStep(description="Run cargo build")],
+                context="Project type: Rust",
+            )
+
+        # Verify context was included in prompt
+        call_args = llm.ainvoke.call_args
+        user_msg = call_args[0][0][1].content
+        assert "Rust" in user_msg
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_parse_failure_assumes_valid(self):
+        """If JSON can't be parsed, assume valid to avoid blocking."""
+        llm = _fake_llm("This looks like a good plan!")
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Task",
+                plan_summary="Summary",
+                steps=[PlanStep(description="Step")],
+            )
+
+        assert result.valid is True
+        assert "good plan" in result.summary
+
+    @pytest.mark.asyncio
+    async def test_handles_markdown_fences(self):
+        resp = '```json\n{"valid": true, "issues": [], "suggestions": [], "summary": "OK"}\n```'
+        llm = _fake_llm(resp)
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Task",
+                plan_summary="Summary",
+                steps=[PlanStep(description="Step")],
+            )
+
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_missing_fields_default(self):
+        """Missing fields in response use defaults."""
+        resp = json.dumps({"valid": False})
+        llm = _fake_llm(resp)
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await validate_plan(
+                task="Task",
+                plan_summary="Summary",
+                steps=[PlanStep(description="Step")],
+            )
+
+        assert result.valid is False
+        assert result.issues == []
+        assert result.suggestions == []
+        assert result.summary == ""

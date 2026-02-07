@@ -155,10 +155,30 @@ class AxonoApp(App):
                 return
 
             async for event_type, data in run_agent(
-                self.agent_graph, self.message_history
+                self.agent_graph, self.message_history, cwd=self._cwd
             ):
                 if event_type == "messages":
                     self.message_history = list(data)
+                    continue
+                if event_type == "intent":
+                    # Intent object - skip display (task_list will show tasks)
+                    continue
+                if event_type == "task_list":
+                    # Show the task list
+                    tasks = data if isinstance(data, list) else []
+                    if tasks:
+                        task_text = "\n".join(
+                            f"  {i+1}. {t}" for i, t in enumerate(tasks)
+                        )
+                        await chat.add_message(
+                            SystemMessage(f"Tasks:\n{task_text}", prefix="Plan")
+                        )
+                    continue
+                if event_type == "task_start":
+                    await chat.add_message(SystemMessage(str(data), prefix="→"))
+                    continue
+                if event_type == "task_complete":
+                    # Task completed - no need to show (next task_start will show)
                     continue
                 message_text = self._parse_agent_data(data)
                 if event_type == "assistant":

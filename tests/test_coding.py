@@ -1439,3 +1439,273 @@ class TestHandleReadFiles:
 
         assert len(state["files"]) == 0
         assert "No new files" in result
+
+
+# ---------------------------------------------------------------------------
+# _build_iterative_prompt with plan_validation
+# ---------------------------------------------------------------------------
+
+
+class TestBuildIterativePromptPlanValidation:
+
+    def test_includes_valid_plan_validation(self):
+        """Prompt shows passed plan validation."""
+        from axono.coding import _build_iterative_prompt
+        from axono.pipeline import PlanValidation
+
+        state = {
+            "plan_validation": PlanValidation(valid=True, summary="Plan looks good"),
+        }
+        prompt = _build_iterative_prompt("task", "/tmp", [], state)
+
+        assert "Plan validation: PASSED" in prompt
+        assert "Plan looks good" in prompt
+
+    def test_includes_failed_plan_validation_with_issues(self):
+        """Prompt shows failed plan validation with issues."""
+        from axono.coding import _build_iterative_prompt
+        from axono.pipeline import PlanValidation
+
+        state = {
+            "plan_validation": PlanValidation(
+                valid=False,
+                issues=["Missing test step", "Wrong order"],
+                suggestions=["Add tests first", "Reorder steps"],
+                summary="Plan incomplete",
+            ),
+        }
+        prompt = _build_iterative_prompt("task", "/tmp", [], state)
+
+        assert "Plan validation: FAILED" in prompt
+        assert "Plan incomplete" in prompt
+        assert "Missing test step" in prompt
+        assert "Wrong order" in prompt
+        assert "Suggestions:" in prompt
+        assert "Add tests first" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _handle_validate_plan
+# ---------------------------------------------------------------------------
+
+
+class TestHandleValidatePlan:
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_no_plan(self):
+        """Raises error when no plan available."""
+        from axono.coding import _handle_validate_plan
+
+        state = {}
+
+        with pytest.raises(ValueError, match="No plan available"):
+            await _handle_validate_plan("task", state)
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_success(self):
+        """Returns success message when plan is valid."""
+        from axono.coding import CodingPlan, _handle_validate_plan
+
+        valid_resp = json.dumps(
+            {
+                "valid": True,
+                "issues": [],
+                "suggestions": [],
+                "summary": "Good plan",
+            }
+        )
+        llm = _fake_llm(valid_resp)
+
+        state = {
+            "coding_plan": CodingPlan(
+                summary="Add feature",
+                patches=[
+                    {"path": "a.py", "action": "create", "description": "Create file"}
+                ],
+            ),
+        }
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await _handle_validate_plan("Add feature", state)
+
+        assert "Plan validated ✓" in result
+        assert "plan_validation" in state
+        assert state["plan_validation"].valid is True
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_failure(self):
+        """Returns failure message when plan is invalid."""
+        from axono.coding import CodingPlan, _handle_validate_plan
+
+        invalid_resp = json.dumps(
+            {
+                "valid": False,
+                "issues": ["Missing tests", "Wrong approach"],
+                "suggestions": ["Add test file"],
+                "summary": "Incomplete",
+            }
+        )
+        llm = _fake_llm(invalid_resp)
+
+        state = {
+            "coding_plan": CodingPlan(
+                summary="Add feature",
+                patches=[
+                    {"path": "a.py", "action": "create", "description": "Create file"}
+                ],
+            ),
+        }
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await _handle_validate_plan("Add feature", state)
+
+        assert "Plan validation failed" in result
+        assert "Missing tests" in result
+        assert state["plan_validation"].valid is False
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_with_files_context(self):
+        """Includes files in context when available."""
+        from axono.coding import (
+            CodingPlan,
+            FileContent,
+            _handle_validate_plan,
+        )
+
+        valid_resp = json.dumps(
+            {
+                "valid": True,
+                "issues": [],
+                "suggestions": [],
+                "summary": "OK",
+            }
+        )
+        llm = _fake_llm(valid_resp)
+
+        state = {
+            "coding_plan": CodingPlan(
+                summary="Add feature",
+                patches=[{"path": "a.py", "action": "create", "description": "Create"}],
+            ),
+            "files": [
+                FileContent(path="existing.py", content="code"),
+            ],
+        }
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            await _handle_validate_plan("task", state)
+
+        # Verify context was passed (check ainvoke was called)
+        call_args = llm.ainvoke.call_args
+        user_msg = call_args[0][0][1].content
+        assert "existing.py" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_uses_description_fallback(self):
+        """Uses fallback description when none provided."""
+        from axono.coding import CodingPlan, _handle_validate_plan
+
+        valid_resp = json.dumps(
+            {
+                "valid": True,
+                "issues": [],
+                "suggestions": [],
+                "summary": "OK",
+            }
+        )
+        llm = _fake_llm(valid_resp)
+
+        state = {
+            "coding_plan": CodingPlan(
+                summary="Add feature",
+                patches=[
+                    {"path": "a.py", "action": "create", "description": ""},  # Empty
+                ],
+            ),
+        }
+
+        with mock.patch("axono.pipeline.get_llm", return_value=llm):
+            result = await _handle_validate_plan("task", state)
+
+        assert "Plan validated" in result
+
+
+# ---------------------------------------------------------------------------
+# run_coding_pipeline with validate_plan action
+# ---------------------------------------------------------------------------
+
+
+class TestRunCodingPipelineValidatePlan:
+
+    @pytest.mark.asyncio
+    async def test_validate_plan_action(self, tmp_path):
+        """Pipeline handles validate_plan action."""
+        (tmp_path / "README.md").write_text("# Project")
+
+        call_count = 0
+
+        async def fake_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+
+            # First call: plan
+            if call_count == 1:
+                return SimpleNamespace(
+                    content='{"action": "plan", "reason": "create plan"}'
+                )
+            # Second call: planner response
+            if call_count == 2:
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "summary": "Add file",
+                            "files_to_read": [],
+                            "patches": [
+                                {
+                                    "path": "new.py",
+                                    "action": "create",
+                                    "description": "Create",
+                                }
+                            ],
+                        }
+                    )
+                )
+            # Third call: validate_plan action
+            if call_count == 3:
+                return SimpleNamespace(
+                    content='{"action": "validate_plan", "reason": "check plan"}'
+                )
+            # Fourth call: plan validation response
+            if call_count == 4:
+                return SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "valid": True,
+                            "issues": [],
+                            "suggestions": [],
+                            "summary": "Good",
+                        }
+                    )
+                )
+            # Fifth call: done
+            return SimpleNamespace(content='{"done": true, "summary": "Validated"}')
+
+        fake_llm = mock.AsyncMock()
+        fake_llm.ainvoke = fake_ainvoke
+
+        with mock.patch("axono.coding.get_llm", return_value=fake_llm):
+            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+                events = []
+                async for ev in run_coding_pipeline("task", str(tmp_path)):
+                    events.append(ev)
+
+        types = [e[0] for e in events]
+        assert "status" in types
+        assert "result" in types
+
+        # Check that validate_plan status was emitted
+        status_msgs = [e[1] for e in events if e[0] == "status"]
+        assert any(
+            "validate_plan" in msg.lower() or "validated" in msg.lower()
+            for msg in status_msgs
+        )

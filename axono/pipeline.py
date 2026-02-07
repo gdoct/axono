@@ -2,7 +2,13 @@
 
 This module provides common utilities and abstractions used by both the
 shell pipeline and coding pipeline. Both pipelines follow the same
-iterative model: Plan one step → Execute → Observe → Repeat.
+staged model:
+
+1. INVESTIGATE → Gather context about the project/task
+2. PLAN → Create a complete plan for achieving the goal
+3. VALIDATE_PLAN → Check if plan will achieve the goal (max 5 iterations)
+4. EXECUTE → Run the plan (generate+write for code, commands for shell)
+5. VALIDATE → Verify the execution achieved the goal
 """
 
 import json
@@ -66,7 +72,7 @@ def truncate(text: str, max_len: int = 500) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline context
+# Pipeline context (legacy - kept for compatibility)
 # ---------------------------------------------------------------------------
 
 
@@ -97,6 +103,131 @@ class PipelineContext:
     def last_n_results(self, n: int = 5) -> list[ActionResult]:
         """Get the last N results from history."""
         return self.history[-n:] if self.history else []
+
+
+# ---------------------------------------------------------------------------
+# Unified pipeline data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PlanStep:
+    """A single step in a plan with user-friendly description."""
+
+    description: str  # Human-readable description shown to user
+    action: dict = field(default_factory=dict)  # Action details (command, patch, etc.)
+
+
+@dataclass
+class PlanValidation:
+    """Result of plan validation."""
+
+    valid: bool
+    issues: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
+class StepExecution:
+    """Result of executing a single step."""
+
+    step: PlanStep
+    success: bool
+    output: str = ""
+    error: str = ""
+
+
+@dataclass
+class ExecutionResult:
+    """Result of executing all steps in a plan."""
+
+    success: bool
+    step_results: list[StepExecution] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
+class FinalValidation:
+    """Result of final validation after execution."""
+
+    ok: bool
+    issues: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Plan validation
+# ---------------------------------------------------------------------------
+
+PLAN_VALIDATOR_SYSTEM = """\
+You are a plan validation agent. Given:
+- The original user request
+- The proposed plan with steps
+
+Evaluate if executing this plan will achieve the user's goal.
+
+Consider:
+1. Does the plan address all requirements in the request?
+2. Are the steps in the correct order?
+3. Are there any missing steps?
+4. Are there any unnecessary steps?
+5. Will the plan actually achieve the desired outcome?
+
+Respond ONLY with JSON (no markdown fences, no commentary):
+{
+    "valid": true/false,
+    "issues": ["list of problems found"],
+    "suggestions": ["list of improvements"],
+    "summary": "brief assessment"
+}
+"""
+
+
+async def validate_plan(
+    task: str,
+    plan_summary: str,
+    steps: list[PlanStep],
+    context: str = "",
+) -> PlanValidation:
+    """Validate that a plan will achieve the task goal.
+
+    Args:
+        task: The original user request.
+        plan_summary: Summary of the plan.
+        steps: List of planned steps.
+        context: Optional additional context (e.g., project type, files).
+
+    Returns:
+        PlanValidation with validation result.
+    """
+    llm = get_llm("reasoning")
+
+    steps_text = "\n".join(f"{i+1}. {step.description}" for i, step in enumerate(steps))
+
+    user_prompt = f"## User Request\n{task}\n\n## Plan Summary\n{plan_summary}\n\n## Steps\n{steps_text}"
+    if context:
+        user_prompt += f"\n\n## Context\n{context}"
+
+    messages = [
+        SystemMessage(content=PLAN_VALIDATOR_SYSTEM),
+        HumanMessage(content=user_prompt),
+    ]
+
+    response = await llm.ainvoke(messages)
+    raw = coerce_response_text(response.content).strip()
+
+    data = parse_json(raw)
+    if data is None:
+        # If we can't parse, assume valid (don't block on parse failures)
+        return PlanValidation(valid=True, summary=raw)
+
+    return PlanValidation(
+        valid=data.get("valid", True),
+        issues=data.get("issues", []),
+        suggestions=data.get("suggestions", []),
+        summary=data.get("summary", ""),
+    )
 
 
 # ---------------------------------------------------------------------------

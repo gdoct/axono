@@ -506,18 +506,68 @@ class TestBuildAgent:
 
 
 # ---------------------------------------------------------------------------
-# run_agent
+# _run_chat
 # ---------------------------------------------------------------------------
 
 
-class TestRunAgent:
-    """run_agent streams events from the graph."""
+class TestRunChat:
+    """_run_chat handles direct LLM responses for chat intent."""
 
     @pytest.mark.asyncio
-    async def test_yields_assistant_text(self):
+    async def test_yields_assistant_response(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_llm = mock.AsyncMock()
+        mock_llm.ainvoke.return_value = AIMessage(content="Hello!")
+
+        events = []
+        async for ev in agent._run_chat(mock_llm, [HumanMessage(content="Hi")]):
+            events.append(ev)
+
+        assert any(e[0] == "assistant" and "Hello!" in e[1] for e in events)
+        assert any(e[0] == "messages" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_yields_error_on_exception(self):
+        mock_llm = mock.AsyncMock()
+        mock_llm.ainvoke.side_effect = ValueError("LLM error")
+
+        events = []
+        async for ev in agent._run_chat(mock_llm, []):
+            events.append(ev)
+
+        assert any(e[0] == "error" and "LLM error" in e[1] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_empty_content_not_yielded(self):
         from langchain_core.messages import AIMessage
 
-        ai_msg = AIMessage(content="Hello there")
+        mock_llm = mock.AsyncMock()
+        mock_llm.ainvoke.return_value = AIMessage(content="")
+
+        events = []
+        async for ev in agent._run_chat(mock_llm, []):
+            events.append(ev)
+
+        # No assistant event for empty content
+        assert not any(e[0] == "assistant" for e in events)
+        # But messages should still be yielded
+        assert any(e[0] == "messages" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# _run_task_step
+# ---------------------------------------------------------------------------
+
+
+class TestRunTaskStep:
+    """_run_task_step executes a single task using the agent."""
+
+    @pytest.mark.asyncio
+    async def test_yields_agent_events(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        ai_msg = AIMessage(content="Done")
 
         async def fake_stream(inputs, stream_mode=None):
             yield {"model": {"messages": [ai_msg]}}
@@ -526,21 +576,20 @@ class TestRunAgent:
         graph.astream = fake_stream
 
         events = []
-        async for ev in agent.run_agent(graph, []):
+        async for ev in agent._run_task_step(
+            graph, [HumanMessage(content="original")], "Create file", "/tmp"
+        ):
             events.append(ev)
 
-        types = [e[0] for e in events]
-        assert "assistant" in types
-        assert any("Hello there" in e[1] for e in events if e[0] == "assistant")
-        assert "messages" in types
+        assert any(e[0] == "assistant" and "Done" in e[1] for e in events)
 
     @pytest.mark.asyncio
-    async def test_yields_tool_call(self):
+    async def test_yields_tool_calls(self):
         from langchain_core.messages import AIMessage
 
         ai_msg = AIMessage(
             content="",
-            tool_calls=[{"name": "bash", "args": {"command": "ls"}, "id": "1"}],
+            tool_calls=[{"name": "bash", "args": {"command": "touch file"}, "id": "1"}],
         )
 
         async def fake_stream(inputs, stream_mode=None):
@@ -550,16 +599,32 @@ class TestRunAgent:
         graph.astream = fake_stream
 
         events = []
-        async for ev in agent.run_agent(graph, []):
+        async for ev in agent._run_task_step(graph, [], "Create file", "/tmp"):
             events.append(ev)
 
         assert any(e[0] == "tool_call" and "bash" in e[1] for e in events)
 
     @pytest.mark.asyncio
+    async def test_yields_error_on_exception(self):
+        async def failing_stream(inputs, stream_mode=None):
+            raise ValueError("agent boom")
+            yield  # noqa: unreachable
+
+        graph = mock.AsyncMock()
+        graph.astream = failing_stream
+
+        events = []
+        async for ev in agent._run_task_step(graph, [], "Task", "/tmp"):
+            events.append(ev)
+
+        assert any(e[0] == "error" and "agent boom" in e[1] for e in events)
+
+    @pytest.mark.asyncio
     async def test_yields_tool_result(self):
+        """Test that tool results from the tools node are yielded."""
         from langchain_core.messages import ToolMessage
 
-        tool_msg = ToolMessage(content="file list", tool_call_id="1")
+        tool_msg = ToolMessage(content="file created", tool_call_id="1")
 
         async def fake_stream(inputs, stream_mode=None):
             yield {"tools": {"messages": [tool_msg]}}
@@ -568,47 +633,302 @@ class TestRunAgent:
         graph.astream = fake_stream
 
         events = []
-        async for ev in agent.run_agent(graph, []):
+        async for ev in agent._run_task_step(graph, [], "Create file", "/tmp"):
             events.append(ev)
 
-        assert any(e[0] == "tool_result" and "file list" in e[1] for e in events)
+        assert any(e[0] == "tool_result" and "file created" in e[1] for e in events)
+
+
+# ---------------------------------------------------------------------------
+# run_agent
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgent:
+    """run_agent orchestrates intent analysis and execution."""
 
     @pytest.mark.asyncio
-    async def test_yields_error_on_exception(self):
-        async def failing_stream(inputs, stream_mode=None):
-            raise ValueError("boom")
-            yield  # noqa: unreachable – makes this an async generator
-
+    async def test_no_user_message_yields_error(self):
         graph = mock.AsyncMock()
-        graph.astream = failing_stream
 
         events = []
-        async for ev in agent.run_agent(graph, []):
+        async for ev in agent.run_agent(graph, [], cwd="/tmp"):
             events.append(ev)
 
-        assert any(e[0] == "error" and "boom" in e[1] for e in events)
+        assert any(e[0] == "error" and "No user message" in e[1] for e in events)
 
     @pytest.mark.asyncio
-    async def test_messages_accumulate(self):
+    async def test_chat_intent_uses_direct_llm(self):
         from langchain_core.messages import AIMessage, HumanMessage
 
-        human = HumanMessage(content="hi")
-        ai = AIMessage(content="hello")
+        mock_intent = agent.Intent(type="chat", task_list=[], reasoning="Greeting")
+
+        mock_llm_response = AIMessage(content="Hello!")
+
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            with mock.patch("axono.agent.init_chat_model") as mock_init:
+                mock_llm = mock.AsyncMock()
+                mock_llm.ainvoke.return_value = mock_llm_response
+                mock_init.return_value = mock_llm
+
+                graph = mock.AsyncMock()
+                events = []
+                async for ev in agent.run_agent(
+                    graph, [HumanMessage(content="Hi")], cwd="/tmp"
+                ):
+                    events.append(ev)
+
+        # Should yield intent event
+        assert any(e[0] == "intent" for e in events)
+        # Should yield assistant response
+        assert any(e[0] == "assistant" and "Hello!" in e[1] for e in events)
+        # Graph should NOT be called for chat intent
+        graph.astream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_task_intent_yields_task_list(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_intent = agent.Intent(
+            type="task",
+            task_list=["Step 1", "Step 2"],
+            reasoning="Creation request",
+        )
+
+        ai_msg = AIMessage(content="Done")
 
         async def fake_stream(inputs, stream_mode=None):
-            yield {"model": {"messages": [ai]}}
+            yield {"model": {"messages": [ai_msg]}}
 
-        graph = mock.AsyncMock()
-        graph.astream = fake_stream
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            graph = mock.AsyncMock()
+            graph.astream = fake_stream
 
-        events = []
-        async for ev in agent.run_agent(graph, [human]):
-            events.append(ev)
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Create project")], cwd="/tmp"
+            ):
+                events.append(ev)
 
-        msg_event = [e for e in events if e[0] == "messages"]
-        assert len(msg_event) == 1
-        messages = msg_event[0][1]
-        # Should contain the original human message + the AI response
-        assert len(messages) == 2
-        assert messages[0].content == "hi"
-        assert messages[1].content == "hello"
+        # Should yield task_list
+        task_list_events = [e for e in events if e[0] == "task_list"]
+        assert len(task_list_events) == 1
+        assert task_list_events[0][1] == ["Step 1", "Step 2"]
+
+        # Should yield task_start for each task
+        task_starts = [e for e in events if e[0] == "task_start"]
+        assert len(task_starts) == 2
+
+        # Should yield task_complete for each task
+        task_completes = [e for e in events if e[0] == "task_complete"]
+        assert len(task_completes) == 2
+
+    @pytest.mark.asyncio
+    async def test_task_intent_empty_list_fallback(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_intent = agent.Intent(
+            type="task",
+            task_list=[],  # Empty task list
+            reasoning="Something",
+        )
+
+        ai_msg = AIMessage(content="Fallback response")
+
+        async def fake_stream(inputs, stream_mode=None):
+            yield {"model": {"messages": [ai_msg]}}
+
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            graph = mock.AsyncMock()
+            graph.astream = fake_stream
+
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Do something")], cwd="/tmp"
+            ):
+                events.append(ev)
+
+        # Should yield error about empty task list
+        assert any(e[0] == "error" and "no tasks" in e[1].lower() for e in events)
+        # Should still execute via agent fallback
+        assert any(e[0] == "assistant" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_intent_analysis_error(self):
+        from langchain_core.messages import HumanMessage
+
+        with mock.patch(
+            "axono.agent.analyze_intent", side_effect=ValueError("LLM down")
+        ):
+            graph = mock.AsyncMock()
+
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Hello")], cwd="/tmp"
+            ):
+                events.append(ev)
+
+        assert any(e[0] == "error" and "Intent analysis failed" in e[1] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_cwd_expanded(self):
+        """Test that ~ in cwd is expanded."""
+        import os
+
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_intent = agent.Intent(type="chat", task_list=[], reasoning="Test")
+
+        captured_cwd = []
+
+        async def capture_intent(msg, cwd):
+            captured_cwd.append(cwd)
+            return mock_intent
+
+        with mock.patch("axono.agent.analyze_intent", side_effect=capture_intent):
+            with mock.patch("axono.agent.init_chat_model") as mock_init:
+                mock_llm = mock.AsyncMock()
+                mock_llm.ainvoke.return_value = AIMessage(content="Hi")
+                mock_init.return_value = mock_llm
+
+                graph = mock.AsyncMock()
+                events = []
+                async for ev in agent.run_agent(
+                    graph, [HumanMessage(content="Hi")], cwd="~"
+                ):
+                    events.append(ev)
+
+        # ~ should be expanded to home directory
+        assert captured_cwd[0] == os.path.expanduser("~")
+
+    @pytest.mark.asyncio
+    async def test_task_step_error_continues_to_next(self):
+        """Test that an error in one task doesn't stop subsequent tasks."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_intent = agent.Intent(
+            type="task",
+            task_list=["Task 1", "Task 2"],
+            reasoning="Multi-step",
+        )
+
+        call_count = [0]
+
+        async def fake_stream(inputs, stream_mode=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ValueError("Task 1 failed")
+            yield {"model": {"messages": [AIMessage(content="Task 2 done")]}}
+
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            graph = mock.AsyncMock()
+            graph.astream = fake_stream
+
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Do tasks")], cwd="/tmp"
+            ):
+                events.append(ev)
+
+        # Should have error from task 1
+        assert any(e[0] == "error" and "Task 1 failed" in e[1] for e in events)
+        # Should still complete task 2
+        assert any(e[0] == "assistant" and "Task 2 done" in e[1] for e in events)
+        # Both tasks should complete
+        task_completes = [e for e in events if e[0] == "task_complete"]
+        assert len(task_completes) == 2
+
+    @pytest.mark.asyncio
+    async def test_message_with_type_attribute(self):
+        """Test extraction of user message from object with .type attribute."""
+        from types import SimpleNamespace
+
+        mock_intent = agent.Intent(type="chat", task_list=[], reasoning="Test")
+
+        # Create a message-like object with both content and type attributes
+        msg = SimpleNamespace(content="Hello world", type="human")
+
+        with mock.patch(
+            "axono.agent.analyze_intent", return_value=mock_intent
+        ) as mock_analyze:
+            with mock.patch("axono.agent.init_chat_model") as mock_init:
+                from langchain_core.messages import AIMessage
+
+                mock_llm = mock.AsyncMock()
+                mock_llm.ainvoke.return_value = AIMessage(content="Hi!")
+                mock_init.return_value = mock_llm
+
+                graph = mock.AsyncMock()
+                events = []
+                async for ev in agent.run_agent(graph, [msg], cwd="/tmp"):
+                    events.append(ev)
+
+        # analyze_intent should be called with the extracted message
+        mock_analyze.assert_called_once()
+        assert mock_analyze.call_args[0][0] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_fallback_yields_tool_call_and_result(self):
+        """Test fallback agent execution yields tool calls and results."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        mock_intent = agent.Intent(
+            type="task",
+            task_list=[],  # Empty - triggers fallback
+            reasoning="Something",
+        )
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {"command": "ls"}, "id": "1"}],
+        )
+        tool_msg = ToolMessage(content="file1.txt", tool_call_id="1")
+
+        async def fake_stream(inputs, stream_mode=None):
+            yield {"model": {"messages": [ai_msg]}}
+            yield {"tools": {"messages": [tool_msg]}}
+
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            graph = mock.AsyncMock()
+            graph.astream = fake_stream
+
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Do something")], cwd="/tmp"
+            ):
+                events.append(ev)
+
+        # Should yield tool_call from fallback
+        assert any(e[0] == "tool_call" and "bash" in e[1] for e in events)
+        # Should yield tool_result from fallback
+        assert any(e[0] == "tool_result" and "file1.txt" in e[1] for e in events)
+
+    @pytest.mark.asyncio
+    async def test_fallback_exception_yields_error(self):
+        """Test fallback agent execution error handling."""
+        from langchain_core.messages import HumanMessage
+
+        mock_intent = agent.Intent(
+            type="task",
+            task_list=[],  # Empty - triggers fallback
+            reasoning="Something",
+        )
+
+        async def failing_stream(inputs, stream_mode=None):
+            raise RuntimeError("Agent crashed")
+            yield  # noqa: unreachable
+
+        with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
+            graph = mock.AsyncMock()
+            graph.astream = failing_stream
+
+            events = []
+            async for ev in agent.run_agent(
+                graph, [HumanMessage(content="Do something")], cwd="/tmp"
+            ):
+                events.append(ev)
+
+        # Should yield the initial error about no tasks
+        assert any(e[0] == "error" and "no tasks" in e[1].lower() for e in events)
+        # Should also yield the exception error
+        assert any(e[0] == "error" and "Agent crashed" in e[1] for e in events)

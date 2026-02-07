@@ -14,6 +14,7 @@ from langchain_core.tools import tool
 
 from axono import config
 from axono.coding import run_coding_pipeline
+from axono.intent import Intent, analyze_intent
 from axono.safety import judge_command
 from axono.shell import run_shell_pipeline
 
@@ -287,16 +288,45 @@ async def build_agent(on_status=None):
     return graph
 
 
-async def run_agent(graph, messages) -> AsyncGenerator[tuple[str, Any], None]:
-    """Run the agent and yield UI events after each node completes.
+async def _run_chat(llm, messages) -> AsyncGenerator[tuple[str, Any], None]:
+    """Handle chat intent - direct LLM response without tools.
 
     Yields tuples of (event_type, data):
-      - ("assistant", str)   - Full assistant message text
-      - ("tool_result", str) - Tool output text
-      - ("messages", list)   - Updated full message history
+      - ("assistant", str)   - LLM response text
+      - ("messages", list)   - Updated message history
       - ("error", str)       - An error occurred
     """
-    inputs = {"messages": list(messages)}
+    collected_messages = list(messages)
+
+    try:
+        response = await llm.ainvoke(messages)
+        if response.content:
+            yield ("assistant", response.content)
+        collected_messages.append(response)
+        yield ("messages", collected_messages)
+    except Exception as e:
+        yield ("error", f"{type(e).__name__}: {e}")
+
+
+async def _run_task_step(
+    graph, messages, task: str, cwd: str
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Execute a single task step using the agent.
+
+    Yields the same event types as run_agent.
+    """
+    from langchain_core.messages import HumanMessage as HM
+
+    # Build a focused prompt for this specific task
+    task_prompt = (
+        f"Execute this specific task: {task}\n"
+        f"Working directory: {cwd}\n"
+        "Complete this task and report the result concisely."
+    )
+
+    # Create messages with the task-specific prompt
+    task_messages = list(messages) + [HM(content=task_prompt)]
+    inputs = {"messages": task_messages}
     collected_messages = list(messages)
 
     try:
@@ -326,3 +356,132 @@ async def run_agent(graph, messages) -> AsyncGenerator[tuple[str, Any], None]:
 
     except Exception as e:
         yield ("error", f"{type(e).__name__}: {e}")
+
+
+async def run_agent(
+    graph, messages, cwd: str = "~"
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Run the agent with intent analysis.
+
+    First analyzes the user's intent:
+    - chat: Direct LLM response without tools
+    - task: Creates task list and executes each step
+
+    Args:
+        graph: The agent graph (contains LLM and tools).
+        messages: Conversation history.
+        cwd: Current working directory.
+
+    Yields tuples of (event_type, data):
+      - ("intent", Intent)       - Classification result
+      - ("task_list", list[str]) - High-level tasks (for task intent)
+      - ("task_start", str)      - Starting a task
+      - ("task_complete", str)   - Task finished
+      - ("assistant", str)       - LLM response text
+      - ("tool_call", str)       - Tool being called
+      - ("tool_result", str)     - Tool output
+      - ("messages", list)       - Updated message history
+      - ("error", str)           - An error occurred
+    """
+    # Extract the last user message for intent analysis
+    from langchain_core.messages import HumanMessage as HM
+
+    last_user_msg: str | None = None
+    for msg in reversed(messages):
+        # Check for HumanMessage (langchain) or message-like object with type="human"
+        if isinstance(msg, HM):
+            content = msg.content
+            last_user_msg = str(content) if content else None
+            break
+        elif hasattr(msg, "content") and hasattr(msg, "type") and msg.type == "human":
+            content = msg.content
+            last_user_msg = str(content) if content else None
+            break
+
+    if not last_user_msg:
+        yield ("error", "No user message found")
+        return
+
+    # Expand cwd
+    cwd = os.path.expanduser(cwd)
+
+    # Analyze intent
+    try:
+        intent = await analyze_intent(last_user_msg, cwd)
+        yield ("intent", intent)
+    except Exception as e:
+        yield ("error", f"Intent analysis failed: {e}")
+        return
+
+    collected_messages = list(messages)
+
+    if intent.type == "chat":
+        # Direct LLM response without tools
+        from langchain.chat_models import init_chat_model
+
+        llm = init_chat_model(
+            model=config.get_model_name("instruction"),
+            model_provider=config.LLM_MODEL_PROVIDER,
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY,
+        )
+        async for event in _run_chat(llm, messages):
+            if event[0] == "messages":
+                collected_messages = event[1]
+            else:
+                yield event
+        yield ("messages", collected_messages)
+
+    else:
+        # Task mode: execute each task in order
+        if intent.task_list:
+            yield ("task_list", intent.task_list)
+
+            for i, task in enumerate(intent.task_list):
+                yield ("task_start", task)
+
+                # Execute this task step
+                async for event in _run_task_step(graph, collected_messages, task, cwd):
+                    if event[0] == "messages":
+                        collected_messages = event[1]
+                    elif event[0] == "error":
+                        yield event
+                        # Continue to next task on error (don't abort entirely)
+                    else:
+                        yield event
+
+                yield ("task_complete", task)
+
+            yield ("messages", collected_messages)
+        else:
+            # No task list but task intent - fall back to normal agent
+            yield ("error", "Task intent but no tasks identified")
+            inputs = {"messages": list(messages)}
+
+            try:
+                async for update in graph.astream(inputs, stream_mode="updates"):
+                    for node_name, state_update in update.items():
+                        new_msgs = state_update.get("messages", [])
+                        for msg in new_msgs:
+                            collected_messages.append(msg)
+
+                        if node_name == "model":
+                            for msg in new_msgs:
+                                if isinstance(msg, AIMessage):
+                                    if msg.content:
+                                        yield ("assistant", msg.content)
+                                    if msg.tool_calls:
+                                        for tc in msg.tool_calls:
+                                            yield (
+                                                "tool_call",
+                                                f"{tc['name']}({tc['args']})",
+                                            )
+                        elif node_name == "tools":
+                            for msg in new_msgs:
+                                if isinstance(msg, ToolMessage):
+                                    yield ("tool_result", msg.content)
+
+                yield ("messages", collected_messages)
+
+            except Exception as e:
+                yield ("error", f"{type(e).__name__}: {e}")

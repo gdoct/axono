@@ -24,7 +24,15 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from axono import config
-from axono.pipeline import coerce_response_text, get_llm, parse_json, truncate
+from axono.pipeline import (
+    PlanStep,
+    PlanValidation,
+    coerce_response_text,
+    get_llm,
+    parse_json,
+    truncate,
+    validate_plan,
+)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -609,6 +617,7 @@ Available actions:
 - {"action": "investigate", "reason": "..."} - Scan project to find relevant files
 - {"action": "read_files", "files": ["path1", "path2"], "reason": "..."} - Read specific files
 - {"action": "plan", "reason": "..."} - Create a detailed coding plan
+- {"action": "validate_plan", "reason": "..."} - Validate if the plan will achieve the goal
 - {"action": "generate", "reason": "..."} - Generate code based on the plan
 - {"action": "write", "reason": "..."} - Write generated patches to disk
 - {"action": "validate", "reason": "..."} - Validate the changes
@@ -616,8 +625,10 @@ Available actions:
 
 RULES:
 - Take ONE action at a time
-- After writing files, ALWAYS validate
-- If validation fails, you can re-generate and re-write
+- After creating a plan, validate it before generating code
+- After writing files, ALWAYS validate the result
+- If plan validation fails, revise the plan
+- If code validation fails, you can re-generate and re-write
 - Respond ONLY with JSON
 """
 
@@ -647,6 +658,20 @@ def _build_iterative_prompt(
     if "coding_plan" in state:
         plan_summary = state["coding_plan"].summary
         parts.append(f"Current plan: {plan_summary}")
+
+    # Show plan validation result if we have one
+    if "plan_validation" in state:
+        pv = state["plan_validation"]
+        if pv.valid:
+            parts.append(f"Plan validation: PASSED - {pv.summary}")
+        else:
+            parts.append(f"Plan validation: FAILED - {pv.summary}")
+            for issue in pv.issues[:3]:
+                parts.append(f"  - {issue}")
+            if pv.suggestions:
+                parts.append("  Suggestions:")
+                for sug in pv.suggestions[:2]:
+                    parts.append(f"    - {sug}")
 
     # Show generated patches if we have them
     if "generated" in state and state["generated"].patches:
@@ -779,7 +804,16 @@ async def run_coding_pipeline(task: str, working_dir: str):
 
             elif action == "plan":
                 result = await _handle_plan(task, working_dir, state)
+                # Clear any previous plan validation when a new plan is created
+                state.pop("plan_validation", None)
                 history.append({"action": "plan", "success": True, "reason": reason})
+                yield ("status", result)
+
+            elif action == "validate_plan":
+                result = await _handle_validate_plan(task, state)
+                history.append(
+                    {"action": "validate_plan", "success": True, "reason": reason}
+                )
                 yield ("status", result)
 
             elif action == "generate":
@@ -872,6 +906,45 @@ async def _handle_plan(task: str, working_dir: str, state: dict[str, Any]) -> st
     state["coding_plan"] = coding_plan
     state["files"] = file_contents
     return f"Plan: {coding_plan.summary}"
+
+
+async def _handle_validate_plan(task: str, state: dict[str, Any]) -> str:
+    """Handle the validate_plan action."""
+    coding_plan = state.get("coding_plan")
+    if not coding_plan:
+        raise ValueError("No plan available. Run 'plan' first.")
+
+    # Convert CodingPlan patches to PlanStep format
+    steps = [
+        PlanStep(
+            description=p.get("description")
+            or f"{p.get('action', 'modify')} {p.get('path', '')}",
+            action={"path": p.get("path", ""), "action": p.get("action", "update")},
+        )
+        for p in coding_plan.patches
+    ]
+
+    # Build context from files in state
+    files_in_context = state.get("files", [])
+    context = ""
+    if files_in_context:
+        context = f"Files in context: {', '.join(fc.path for fc in files_in_context)}"
+
+    validation = await validate_plan(
+        task=task,
+        plan_summary=coding_plan.summary,
+        steps=steps,
+        context=context,
+    )
+    state["plan_validation"] = validation
+
+    if validation.valid:
+        return f"Plan validated ✓ - {validation.summary}"
+    else:
+        issues = (
+            "; ".join(validation.issues[:2]) if validation.issues else "Issues found"
+        )
+        return f"Plan validation failed: {issues}"
 
 
 async def _handle_generate(state: dict[str, Any]) -> str:

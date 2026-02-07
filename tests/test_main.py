@@ -282,7 +282,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_assistant_event(self):
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("assistant", "Hi there!")
             yield ("messages", list(messages))
 
@@ -300,7 +300,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_tool_call_event(self):
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("tool_call", "bash({'command': 'ls'})")
             yield ("messages", list(messages))
 
@@ -316,7 +316,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_tool_groups_collapse_on_assistant_message(self):
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("tool_call", "bash({'command': 'ls'})")
             yield ("tool_result", "file1.py\n__CWD__:/tmp")
             yield ("assistant", "Done.")
@@ -335,7 +335,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_tool_result_with_cwd(self):
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("tool_result", "file1.py\nfile2.py\n__CWD__:/tmp/project")
             yield ("messages", list(messages))
 
@@ -351,7 +351,7 @@ class TestProcessMessage:
     async def test_tool_result_cwd_only_no_output_message(self):
         """When tool_result is only __CWD__, no Output SystemMessage is added."""
 
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("tool_result", "__CWD__:/home/user")
             yield ("messages", list(messages))
 
@@ -365,7 +365,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_error_event(self):
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             yield ("error", "Something went wrong")
             yield ("messages", list(messages))
 
@@ -382,6 +382,98 @@ class TestProcessMessage:
                     assert len(sys_msgs) >= 1
 
     @pytest.mark.asyncio
+    async def test_intent_event_skipped(self):
+        """Intent events are skipped (not displayed)."""
+        from types import SimpleNamespace
+
+        intent = SimpleNamespace(type="chat", task_list=[], reasoning="Test")
+
+        async def fake_run(graph, messages, cwd=None):
+            yield ("intent", intent)
+            yield ("messages", list(messages))
+
+        with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
+            with mock.patch("axono.main.run_agent", new=fake_run):
+                async with AxonoApp().run_test(size=(80, 24)) as pilot:
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    # Should not crash - intent events are silently skipped
+
+    @pytest.mark.asyncio
+    async def test_task_list_event(self):
+        """Task list events show the task plan."""
+
+        async def fake_run(graph, messages, cwd=None):
+            yield ("task_list", ["Create file", "Run tests"])
+            yield ("messages", list(messages))
+
+        with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
+            with mock.patch("axono.main.run_agent", new=fake_run):
+                async with AxonoApp().run_test(size=(80, 24)) as pilot:
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
+                    sys_msgs = [
+                        c for c in chat.children if isinstance(c, SystemMessage)
+                    ]
+                    # Should have at least one message with task content
+                    assert len(sys_msgs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_task_list_empty_skipped(self):
+        """Empty task lists don't create messages."""
+
+        async def fake_run(graph, messages, cwd=None):
+            yield ("task_list", [])  # Empty list
+            yield ("messages", list(messages))
+
+        with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
+            with mock.patch("axono.main.run_agent", new=fake_run):
+                async with AxonoApp().run_test(size=(80, 24)) as pilot:
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    # Should not crash - empty task list is handled
+
+    @pytest.mark.asyncio
+    async def test_task_start_event(self):
+        """Task start events show the current task."""
+
+        async def fake_run(graph, messages, cwd=None):
+            yield ("task_start", "Create file")
+            yield ("messages", list(messages))
+
+        with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
+            with mock.patch("axono.main.run_agent", new=fake_run):
+                async with AxonoApp().run_test(size=(80, 24)) as pilot:
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    chat = _app(pilot).query_one("#chat-container", ChatContainer)
+                    sys_msgs = [
+                        c for c in chat.children if isinstance(c, SystemMessage)
+                    ]
+                    assert len(sys_msgs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_task_complete_event_skipped(self):
+        """Task complete events are skipped (not displayed)."""
+
+        async def fake_run(graph, messages, cwd=None):
+            yield ("task_complete", "Create file")
+            yield ("messages", list(messages))
+
+        with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
+            with mock.patch("axono.main.run_agent", new=fake_run):
+                async with AxonoApp().run_test(size=(80, 24)) as pilot:
+                    _app(pilot).agent_graph = cast(Any, object())
+                    _app(pilot).message_history = []
+                    await _app(pilot)._process_message()
+                    # Should not crash - task_complete events are silently skipped
+
+    @pytest.mark.asyncio
     async def test_messages_event_updates_history(self):
         """The 'messages' event replaces message_history.
 
@@ -396,7 +488,7 @@ class TestProcessMessage:
 
         call_log = []
 
-        async def fake_run(graph, messages):
+        async def fake_run(graph, messages, cwd=None):
             call_log.append("called")
             yield ("messages", updated)
 
@@ -420,7 +512,7 @@ class TestProcessMessage:
 
     @pytest.mark.asyncio
     async def test_process_message_exception_resets_flag(self):
-        async def exploding_run(graph, messages):
+        async def exploding_run(graph, messages, cwd=None):
             raise RuntimeError("kaboom")
             yield  # noqa: unreachable
 

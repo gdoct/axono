@@ -75,9 +75,9 @@ def test_cwdstatus_update_path():
     assert "/home/user/project" in text
 
 
-def test_tool_group_starts_expanded():
+def test_tool_group_starts_collapsed():
     tg = ui.ToolGroup("Tool: bash")
-    assert tg.collapsed is False
+    assert tg.collapsed is True
 
 
 def test_get_text_fallback():

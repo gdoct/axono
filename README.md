@@ -73,6 +73,23 @@ This project is not meant to be used on any serious system. Be very careful how 
 *It does not give up. *
 There are some built-in safeguards - it will ask to confirm before formatting your system drive. But be very careful.
 
+## Quick Start (3B Model Example)
+
+Get up and running in minutes with a lightweight 3B model:
+
+1. **Start LM Studio** and enable the local server (Developer → Local Server → Start)
+2. **Load a model** — search for `mistralai/Ministral-3B` and download it, then load it
+3. **Clone and run Axono**:
+   ```bash
+   git clone https://github.com/gdoct/axono.git
+   cd axono
+   ./run.sh
+   ```
+4. **Complete onboarding** — enter your LM Studio server URL (e.g., `http://localhost:1234/v1`), leave model name and API key blank
+5. **Start chatting** — ask Axono to explore your project, write code, or run commands
+
+That's it! A 3B model runs comfortably on most GPUs (even 6GB VRAM) and provides surprisingly capable coding assistance.
+
 ## Requirements
 
 - Python 3.10+

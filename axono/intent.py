@@ -14,7 +14,7 @@ from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from axono.pipeline import coerce_response_text, get_llm, parse_json
+from axono.pipeline import parse_json, stream_response
 
 INTENT_ANALYZER_SYSTEM = """\
 You are an intent classifier for an AI coding assistant. Analyze the user's message and classify it.
@@ -23,7 +23,15 @@ INTENT TYPES:
 - "chat": Greetings, questions about concepts, explanations, chitchat, asking for information
 - "task": Actionable requests like create, build, install, fix, implement, edit, run, deploy, etc.
 
-For "task" intents, create a HIGH-LEVEL task list. Each task should be a logical unit of work, not a shell command.
+For "task" intents, create a HIGH-LEVEL task list. Each task should be a logical unit of work.
+
+IMPORTANT RULES:
+- Do NOT decompose build, install, run, test, or deploy tasks into sub-steps. These are handled
+  by a single tool that plans and executes multiple commands internally.
+  BAD:  ["Identify build system", "Install dependencies", "Build the project", "Verify build"]
+  GOOD: ["Build the project"]
+- Only create multiple tasks when the user's request has genuinely SEPARATE goals
+  (e.g., "clone X and also write a README" → two distinct goals).
 
 EXAMPLES:
 
@@ -33,17 +41,20 @@ User: "Hello, how are you?"
 User: "What is a Python decorator?"
 → {"type": "chat", "task_list": [], "reasoning": "Asking for explanation"}
 
-User: "Create a new Python project with tests"
-→ {"type": "task", "task_list": ["Create project directory structure", "Initialize git repository", "Create pyproject.toml with dependencies", "Create initial test file", "Run tests to verify setup"], "reasoning": "Request to create something"}
+User: "build it"
+→ {"type": "task", "task_list": ["Build the project"], "reasoning": "Build request"}
 
 User: "Install numpy and pandas"
 → {"type": "task", "task_list": ["Install numpy and pandas packages"], "reasoning": "Installation request"}
 
 User: "Clone https://github.com/foo/bar and build it"
-→ {"type": "task", "task_list": ["Clone the repository", "Identify build system", "Install dependencies", "Build the project"], "reasoning": "Multi-step build request"}
+→ {"type": "task", "task_list": ["Clone the repository and build it"], "reasoning": "Clone and build request"}
+
+User: "Create a new Python project with tests"
+→ {"type": "task", "task_list": ["Create a new Python project with tests"], "reasoning": "Project creation request"}
 
 User: "Fix the bug in auth.py where login fails"
-→ {"type": "task", "task_list": ["Investigate auth.py to understand the login flow", "Identify the bug causing login failures", "Fix the bug", "Verify the fix works"], "reasoning": "Bug fix request"}
+→ {"type": "task", "task_list": ["Fix the login bug in auth.py"], "reasoning": "Bug fix request"}
 
 Respond ONLY with JSON (no markdown fences, no commentary):
 {"type": "chat"|"task", "task_list": [...], "reasoning": "..."}
@@ -69,8 +80,6 @@ async def analyze_intent(message: str, cwd: str) -> Intent:
     Returns:
         Intent with type classification and optional task list.
     """
-    llm = get_llm("instruction")
-
     user_prompt = f"Current directory: {cwd}\n\nUser message: {message}"
 
     messages = [
@@ -78,8 +87,7 @@ async def analyze_intent(message: str, cwd: str) -> Intent:
         HumanMessage(content=user_prompt),
     ]
 
-    response = await llm.ainvoke(messages)
-    raw = coerce_response_text(response.content).strip()
+    raw = (await stream_response(messages, "instruction")).strip()
 
     data = parse_json(raw)
     if data is None or not isinstance(data, dict):

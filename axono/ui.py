@@ -81,6 +81,53 @@ class SystemMessage(Static):
         super().__init__(f"[dim]{prefix}:[/dim] [dim]{escaped}[/dim]", markup=True)
 
 
+class TaskListMessage(Static):
+    """Displays a task list with progress indicators.
+
+    Tasks can be marked as pending, in_progress, or completed.
+    """
+
+    DEFAULT_CSS = """
+    TaskListMessage {
+        color: $text-muted;
+        padding: 0 0 0 1;
+        margin: 0 0 1 0;
+    }
+    """
+
+    def __init__(self, tasks: list[str]) -> None:
+        self._tasks = tasks
+        self._current_index = -1  # -1 means not started
+        super().__init__(self._render_tasks(), markup=True)
+
+    def _render_tasks(self) -> str:
+        """Render the task list with status indicators."""
+        lines = ["[dim]Plan:[/dim]"]
+        for i, task in enumerate(self._tasks):
+            escaped = task.replace("[", "\\[")
+            if i < self._current_index:
+                # Completed
+                lines.append(f"  [green]✓[/green] [dim]{escaped}[/dim]")
+            elif i == self._current_index:
+                # In progress
+                lines.append(f"  [yellow]→[/yellow] [bold]{escaped}[/bold]")
+            else:
+                # Pending
+                lines.append(f"  [dim]○ {escaped}[/dim]")
+        return "\n".join(lines)
+
+    def start_task(self, index: int) -> None:
+        """Mark a task as in progress."""
+        self._current_index = index
+        self.update(self._render_tasks())
+
+    def complete_task(self, index: int) -> None:
+        """Mark a task as completed (moves current past it)."""
+        if index == self._current_index:
+            self._current_index = index + 1
+            self.update(self._render_tasks())
+
+
 class ToolGroup(Collapsible):
     """Collapsible group for tool call + result messages.
 
@@ -158,6 +205,82 @@ class ChatContainer(ScrollableContainer):
             content_widget.scroll_visible(animate=False)
         else:
             await self.add_message(content_widget)
+
+
+class ScanningPanel(Static):
+    """Small panel showing workspace scanning progress with a spinner."""
+
+    DEFAULT_CSS = """
+    ScanningPanel {
+        height: auto;
+        padding: 0 1;
+        color: $accent;
+    }
+    """
+
+    SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__("", markup=True, **kwargs)
+        self._frame = 0
+        self._status = "Scanning workspace..."
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.1, self._spin)
+
+    def _spin(self) -> None:
+        self._frame = (self._frame + 1) % len(self.SPINNER_FRAMES)
+        char = self.SPINNER_FRAMES[self._frame]
+        self.update(f"{char} [dim]{self._status}[/dim]")
+
+    def update_status(self, text: str) -> None:
+        self._status = text
+
+
+class ThinkingPanel(Static):
+    """Shows LLM reasoning/thinking output with a spinner.
+
+    Displays the last few lines of thinking text (dim). Auto-updates
+    as new thinking tokens arrive. Should be removed when thinking ends.
+    """
+
+    DEFAULT_CSS = """
+    ThinkingPanel {
+        height: auto;
+        max-height: 8;
+        padding: 0 1;
+        color: $text-muted;
+    }
+    """
+
+    SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    MAX_LINES = 6
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__("", markup=True, **kwargs)
+        self._frame = 0
+        self._text = ""
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.1, self._spin)
+
+    def _spin(self) -> None:
+        self._frame = (self._frame + 1) % len(self.SPINNER_FRAMES)
+        self._render_thinking()
+
+    def update_thinking(self, text: str) -> None:
+        """Update the displayed thinking text."""
+        self._text = text
+        self._render_thinking()
+
+    def _render_thinking(self) -> None:
+        char = self.SPINNER_FRAMES[self._frame]
+        escaped = self._text.replace("[", "\\[")
+        lines = escaped.strip().splitlines()
+        if len(lines) > self.MAX_LINES:
+            lines = lines[-self.MAX_LINES :]
+        body = "\n".join(lines)
+        self.update(f"{char} [dim italic]{body}[/dim italic]")
 
 
 class CwdStatus(Static):

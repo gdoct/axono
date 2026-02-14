@@ -1,0 +1,27 @@
+# Example Prompt Configuration
+# This file demonstrates the structure and format for defining prompts in Axono.
+
+Name: Code Review Assistant
+Description: >
+  A prompt configuration for performing code reviews and providing constructive
+  feedback on code quality, design patterns, and best practices.
+
+# Model selection: 'instruction' for standard models, 'Reasoning' for extended thinking
+Model: instruction
+
+# System message: Sets the behavior and context for the assistant
+System: |
+  You are an expert code reviewer with deep knowledge of software engineering best practices.
+  Your role is to provide constructive feedback that helps developers improve code quality.
+  Focus on clarity, maintainability, performance, and security.
+  Be respectful and encouraging in your tone.
+
+# User message: Template or example of how users interact with this prompt
+User: |
+  Please review the following code and provide feedback on:
+  1. Code clarity and readability
+  2. Potential bugs or edge cases
+  3. Performance optimizations
+  4. Best practice adherence
+  
+  [Code to review goes here]

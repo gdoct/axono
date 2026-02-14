@@ -13,7 +13,22 @@ dependencies = [
     "langchain==1.2.8",
     "langchain-openai",
     "langchain-mcp-adapters",
+    "langchain-community",
     "python-dotenv",
+    "duckduckgo-search",
+    "ddgs",
+    "faiss-cpu",
+    "sentence-transformers",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+    "pathspec",
+    "watchdog",
+    "black",
+    "isort",
 ]
 
 [project.scripts]
@@ -30,3 +45,7 @@ target-version = ["py310"]
 [tool.isort]
 profile = "black"
 line_length = 88
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+timeout = 120

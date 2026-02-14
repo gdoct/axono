@@ -34,6 +34,8 @@ uv pip install -r requirements.txt
 
 Black (formatter) and isort (import sorter) are configured in `pyproject.toml`. Run `black .` and `isort .` to format code.
 
+Use pylance at its strictest mode to check for errors.
+
 ## Architecture
 
 ### Agent Layer (`axono/agent.py`)

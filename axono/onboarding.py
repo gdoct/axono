@@ -109,17 +109,23 @@ class OnboardingScreen(Screen[bool]):
                 placeholder="http://localhost:1234/v1",
                 id="input-url",
             )
-            yield Label("Model name", classes="field-label")
-            yield Input(
-                value=_DEFAULTS["model_name"],
-                placeholder="local-model",
-                id="input-model",
-            )
             yield Label("API key", classes="field-label")
             yield Input(
                 value=_DEFAULTS["api_key"],
-                placeholder="lm-studio",
+                placeholder="api-key-if-needed",
                 id="input-key",
+            )
+            yield Label("Instruction model (optional)", classes="field-label")
+            yield Input(
+                value=_DEFAULTS["instruction_model"],
+                placeholder="gpt-4",
+                id="input-instruction-model",
+            )
+            yield Label("Reasoning model (optional)", classes="field-label")
+            yield Input(
+                value=_DEFAULTS["reasoning_model"],
+                placeholder="o1",
+                id="input-reasoning-model",
             )
             yield Label("", id="onboard-status")
             with Center(id="btn-row"):
@@ -147,7 +153,10 @@ class OnboardingScreen(Screen[bool]):
     def _do_verify(self) -> None:
         base_url = self.query_one("#input-url", Input).value.strip()
         api_key = self.query_one("#input-key", Input).value.strip()
-        model_name = self.query_one("#input-model", Input).value.strip()
+        instruction_model = self.query_one(
+            "#input-instruction-model", Input
+        ).value.strip()
+        reasoning_model = self.query_one("#input-reasoning-model", Input).value.strip()
 
         if not base_url:
             self.app.call_from_thread(self._set_status, "Server URL is required.", True)
@@ -164,8 +173,9 @@ class OnboardingScreen(Screen[bool]):
         # Save settings
         settings = {
             "base_url": base_url,
-            "model_name": model_name or _DEFAULTS["model_name"],
             "api_key": api_key or _DEFAULTS["api_key"],
+            "instruction_model": instruction_model,
+            "reasoning_model": reasoning_model,
         }
         path = save_config(settings)
         self.app.call_from_thread(

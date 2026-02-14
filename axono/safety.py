@@ -47,7 +47,7 @@ def _get_judge_llm():
     global _judge_llm
     if _judge_llm is None:
         _judge_llm = init_chat_model(
-            model=config.get_model_name("instruction"),
+            model=config.get_model_name("instruction") or "default",
             model_provider=config.LLM_MODEL_PROVIDER,
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,

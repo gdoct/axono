@@ -183,11 +183,12 @@ class TestOnboardingScreen:
             def on_mount(self):
                 self.push_screen(OnboardingScreen())
 
-        async with TestApp().run_test(size=(80, 30)) as pilot:
+        async with TestApp().run_test(size=(80, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.screen
             assert screen.query_one("#input-url")
-            assert screen.query_one("#input-model")
+            assert screen.query_one("#input-instruction-model")
+            assert screen.query_one("#input-reasoning-model")
             assert screen.query_one("#input-key")
             assert screen.query_one("#btn-verify")
             assert screen.query_one("#btn-skip")
@@ -204,7 +205,7 @@ class TestOnboardingScreen:
             def on_mount(self):
                 self.push_screen(OnboardingScreen(), callback=results.append)
 
-        async with TestApp().run_test(size=(80, 30)) as pilot:
+        async with TestApp().run_test(size=(80, 40)) as pilot:
             await pilot.click("#btn-skip")
             await pilot.pause()
 
@@ -245,16 +246,20 @@ class TestOnboardingScreen:
                 "axono.onboarding._verify_connection",
                 return_value=(True, "Connected."),
             ):
-                async with TestApp().run_test(size=(80, 30)) as pilot:
+                async with TestApp().run_test(size=(80, 40)) as pilot:
                     await pilot.pause()
                     screen = pilot.app.screen
                     # Set input values
                     url_input = screen.query_one("#input-url", Input)
                     url_input.value = "http://myhost:1234/v1"
-                    model_input = screen.query_one("#input-model", Input)
-                    model_input.value = "test-model"
                     key_input = screen.query_one("#input-key", Input)
                     key_input.value = "test-key"
+                    instruction_input = screen.query_one(
+                        "#input-instruction-model", Input
+                    )
+                    instruction_input.value = "test-instruction-model"
+                    reasoning_input = screen.query_one("#input-reasoning-model", Input)
+                    reasoning_input.value = "test-reasoning-model"
 
                     await pilot.click("#btn-verify")
                     # Wait for the threaded worker to complete
@@ -265,7 +270,7 @@ class TestOnboardingScreen:
         assert config_file.is_file()
         data = json.loads(config_file.read_text())
         assert data["base_url"] == "http://myhost:1234/v1"
-        assert data["model_name"] == "test-model"
+        assert data["instruction_model"] == "test-instruction-model"
 
     @pytest.mark.asyncio
     async def test_verify_failure_shows_error(self):
@@ -283,7 +288,7 @@ class TestOnboardingScreen:
             "axono.onboarding._verify_connection",
             return_value=(False, "Could not reach server: Connection refused"),
         ):
-            async with TestApp().run_test(size=(80, 30)) as pilot:
+            async with TestApp().run_test(size=(80, 40)) as pilot:
                 await pilot.pause()
                 screen = pilot.app.screen
                 url_input = screen.query_one("#input-url", Input)
@@ -308,7 +313,7 @@ class TestOnboardingScreen:
                 self.push_screen(OnboardingScreen(), callback=results.append)
 
         with mock.patch("axono.onboarding._verify_connection") as mock_verify:
-            async with TestApp().run_test(size=(80, 30)) as pilot:
+            async with TestApp().run_test(size=(80, 40)) as pilot:
                 await pilot.pause()
                 screen = pilot.app.screen
                 url_input = screen.query_one("#input-url", Input)
@@ -334,12 +339,17 @@ class TestOnboardingScreen:
             def on_mount(self):
                 self.push_screen(OnboardingScreen())
 
-        async with TestApp().run_test(size=(80, 30)) as pilot:
+        async with TestApp().run_test(size=(80, 40)) as pilot:
             await pilot.pause()
             screen = pilot.app.screen
             assert screen.query_one("#input-url", Input).value == _DEFAULTS["base_url"]
             assert (
-                screen.query_one("#input-model", Input).value == _DEFAULTS["model_name"]
+                screen.query_one("#input-instruction-model", Input).value
+                == _DEFAULTS["instruction_model"]
+            )
+            assert (
+                screen.query_one("#input-reasoning-model", Input).value
+                == _DEFAULTS["reasoning_model"]
             )
             assert screen.query_one("#input-key", Input).value == _DEFAULTS["api_key"]
 
@@ -347,6 +357,28 @@ class TestOnboardingScreen:
 # ---------------------------------------------------------------------------
 # main() integration with --onboard
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _mock_async_resources():
+    """Mock resources that open connections/threads to prevent test hangs.
+
+    get_checkpointer() opens an aiosqlite connection, embed_folder() opens
+    another, and start_watcher() spawns a watchdog thread.  None of these
+    are closed when AxonoApp exits run_test(), so the process hangs.
+    """
+
+    async def _fake_checkpointer():
+        return mock.MagicMock()
+
+    async def _noop_embed(path):
+        return
+        yield  # noqa: unreachable – makes this an async generator
+
+    with mock.patch("axono.main.get_checkpointer", side_effect=_fake_checkpointer):
+        with mock.patch("axono.main.embed_folder", side_effect=_noop_embed):
+            with mock.patch("axono.main.start_watcher", return_value=mock.MagicMock()):
+                yield
 
 
 class TestMainOnboarding:
@@ -375,61 +407,74 @@ class TestMainOnboarding:
     async def test_onboarding_screen_shown_when_needed(self):
         """When needs_onboarding() is True, OnboardingScreen is pushed."""
         with mock.patch("axono.main.needs_onboarding", return_value=True):
-            with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
-                from axono.main import AxonoApp
+            with mock.patch("axono.main.is_workspace_trusted", return_value=True):
+                with mock.patch(
+                    "axono.main.build_agent", return_value=mock.AsyncMock()
+                ):
+                    from axono.main import AxonoApp
 
-                async with AxonoApp().run_test(size=(80, 30)) as pilot:
-                    await pilot.pause()
-                    # The onboarding screen should be on the screen stack
-                    assert any(
-                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
-                    )
+                    async with AxonoApp().run_test(size=(80, 40)) as pilot:
+                        await pilot.pause()
+                        # The onboarding screen should be on the screen stack
+                        assert any(
+                            isinstance(s, OnboardingScreen)
+                            for s in pilot.app.screen_stack
+                        )
 
     @pytest.mark.asyncio
     async def test_onboarding_screen_not_shown_when_rc_exists(self):
         """When needs_onboarding() is False, OnboardingScreen is NOT pushed."""
         with mock.patch("axono.main.needs_onboarding", return_value=False):
-            with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
-                from axono.main import AxonoApp
+            with mock.patch("axono.main.is_workspace_trusted", return_value=True):
+                with mock.patch(
+                    "axono.main.build_agent", return_value=mock.AsyncMock()
+                ):
+                    from axono.main import AxonoApp
 
-                async with AxonoApp().run_test(size=(80, 30)) as pilot:
-                    await pilot.pause()
-                    assert not any(
-                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
-                    )
+                    async with AxonoApp().run_test(size=(80, 40)) as pilot:
+                        await pilot.pause()
+                        assert not any(
+                            isinstance(s, OnboardingScreen)
+                            for s in pilot.app.screen_stack
+                        )
 
     @pytest.mark.asyncio
     async def test_force_onboard_pushes_screen(self):
         """force_onboard=True always pushes OnboardingScreen."""
         with mock.patch("axono.main.needs_onboarding", return_value=False):
-            with mock.patch("axono.main.build_agent", return_value=mock.AsyncMock()):
-                from axono.main import AxonoApp
+            with mock.patch("axono.main.is_workspace_trusted", return_value=True):
+                with mock.patch(
+                    "axono.main.build_agent", return_value=mock.AsyncMock()
+                ):
+                    from axono.main import AxonoApp
 
-                async with AxonoApp(force_onboard=True).run_test(
-                    size=(80, 30)
-                ) as pilot:
-                    await pilot.pause()
-                    assert any(
-                        isinstance(s, OnboardingScreen) for s in pilot.app.screen_stack
-                    )
+                    async with AxonoApp(force_onboard=True).run_test(
+                        size=(80, 40)
+                    ) as pilot:
+                        await pilot.pause()
+                        assert any(
+                            isinstance(s, OnboardingScreen)
+                            for s in pilot.app.screen_stack
+                        )
 
     @pytest.mark.asyncio
     async def test_agent_init_after_onboarding_dismiss(self):
         """After onboarding dismisses, the agent should be initialized."""
         with mock.patch("axono.main.needs_onboarding", return_value=True):
-            with mock.patch(
-                "axono.main.build_agent", return_value=mock.AsyncMock()
-            ) as mock_build:
-                from axono.main import AxonoApp
+            with mock.patch("axono.main.is_workspace_trusted", return_value=True):
+                with mock.patch(
+                    "axono.main.build_agent", return_value=mock.AsyncMock()
+                ) as mock_build:
+                    from axono.main import AxonoApp
 
-                async with AxonoApp().run_test(size=(80, 30)) as pilot:
-                    await pilot.pause()
-                    # Agent not yet initialized (onboarding screen is up)
-                    mock_build.assert_not_called()
+                    async with AxonoApp().run_test(size=(80, 40)) as pilot:
+                        await pilot.pause()
+                        # Agent not yet initialized (onboarding screen is up)
+                        mock_build.assert_not_called()
 
-                    # Dismiss onboarding via Skip
-                    await pilot.click("#btn-skip")
-                    await pilot.pause()
+                        # Dismiss onboarding via Skip
+                        await pilot.click("#btn-skip")
+                        await pilot.pause()
 
-                    # Now agent should be initializing
-                    mock_build.assert_called_once()
+                        # Now agent should be initializing
+                        mock_build.assert_called_once()

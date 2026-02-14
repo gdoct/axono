@@ -23,16 +23,23 @@ from axono import config
 from axono.pipeline import (
     ExecutionResult,
     FinalValidation,
+    Investigation,
+    PipelineConfig,
+    Plan,
     PlanStep,
-    PlanValidation,
     StepExecution,
-    coerce_response_text,
-    get_llm,
     parse_json,
+    run_pipeline,
+    stream_response,
     truncate,
-    validate_plan,
 )
 from axono.safety import judge_command
+from axono.workspace import (
+    WorkspaceViolationError,
+    check_command_paths,
+    is_path_within_workspace,
+    validate_cd_target,
+)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -50,25 +57,6 @@ class StepResult:
     success: bool
     blocked: bool = False
     block_reason: str = ""
-
-
-@dataclass
-class ShellInvestigation:
-    """Result of the investigation stage."""
-
-    cwd: str
-    dir_listing: str
-    project_type: str | None = None
-    summary: str = ""
-
-
-@dataclass
-class ShellPlan:
-    """A complete plan for a shell task."""
-
-    summary: str
-    steps: list[PlanStep] = field(default_factory=list)
-    raw: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +127,19 @@ def _get_dir_context(cwd: str, max_files: int = 20) -> tuple[str, str | None]:
 
 async def _run_command(cmd: str, cwd: str, unsafe: bool = False) -> StepResult:
     """Execute a single shell command."""
+    # Workspace boundary check
+    workspace_error = check_command_paths(cmd, cwd)
+    if workspace_error:
+        return StepResult(
+            command=cmd,
+            stdout="",
+            stderr="",
+            exit_code=-1,
+            success=False,
+            blocked=True,
+            block_reason=workspace_error,
+        )
+
     # Safety check
     if not unsafe:
         try:
@@ -199,7 +200,7 @@ async def _run_command(cmd: str, cwd: str, unsafe: bool = False) -> StepResult:
 # ---------------------------------------------------------------------------
 
 
-def investigate_shell(working_dir: str) -> ShellInvestigation:
+def investigate_shell(working_dir: str) -> Investigation:
     """Gather directory context and detect project type."""
     dir_listing, project_type = _get_dir_context(working_dir)
 
@@ -208,7 +209,7 @@ def investigate_shell(working_dir: str) -> ShellInvestigation:
         summary_parts.append(f"Project type: {project_type}")
     summary_parts.append(f"Contents: {dir_listing}")
 
-    return ShellInvestigation(
+    return Investigation(
         cwd=working_dir,
         dir_listing=dir_listing,
         project_type=project_type,
@@ -246,9 +247,9 @@ RULES:
 
 async def plan_shell(
     task: str,
-    investigation: ShellInvestigation,
+    investigation: Investigation,
     previous_issues: list[str] | None = None,
-) -> ShellPlan:
+) -> Plan:
     """Create a complete plan of shell commands with descriptions.
 
     Args:
@@ -257,8 +258,6 @@ async def plan_shell(
         previous_issues: Issues from a previous plan validation attempt.
                         If provided, the planner will try a different approach.
     """
-    llm = get_llm("reasoning")
-
     user_prompt = (
         f"Goal: {task}\nCWD: {investigation.cwd}\nContents: {investigation.dir_listing}"
     )
@@ -276,13 +275,12 @@ async def plan_shell(
         HumanMessage(content=user_prompt),
     ]
 
-    response = await llm.ainvoke(messages)
-    raw = coerce_response_text(response.content).strip()
+    raw = (await stream_response(messages, "reasoning")).strip()
 
     data = parse_json(raw)
     if data is None:
         # Fallback: treat entire response as summary with no steps
-        return ShellPlan(summary=raw, steps=[], raw=raw)
+        return Plan(summary=raw, steps=[], raw=raw)
 
     steps = []
     for step_data in data.get("steps", []):
@@ -294,34 +292,10 @@ async def plan_shell(
                 )
             )
 
-    return ShellPlan(
+    return Plan(
         summary=data.get("summary", ""),
         steps=steps,
         raw=raw,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Stage 3: Plan Validation (uses shared validate_plan from pipeline.py)
-# ---------------------------------------------------------------------------
-
-
-async def validate_shell_plan(
-    task: str,
-    plan: ShellPlan,
-    investigation: ShellInvestigation,
-) -> PlanValidation:
-    """Validate that a shell plan will achieve the task goal."""
-    context = f"Directory: {investigation.cwd}"
-    if investigation.project_type:
-        context += f"\nProject type: {investigation.project_type}"
-    context += f"\nContents: {investigation.dir_listing}"
-
-    return await validate_plan(
-        task=task,
-        plan_summary=plan.summary,
-        steps=plan.steps,
-        context=context,
     )
 
 
@@ -331,7 +305,7 @@ async def validate_shell_plan(
 
 
 async def execute_shell(
-    plan: ShellPlan,
+    plan: Plan,
     working_dir: str,
     unsafe: bool = False,
 ) -> tuple[ExecutionResult, str]:
@@ -352,11 +326,22 @@ async def execute_shell(
         # Handle cd specially to track directory changes
         if command.startswith("cd "):
             target = command[3:].strip()
-            target = os.path.expanduser(target)
-            if not os.path.isabs(target):
-                target = os.path.abspath(os.path.join(cwd, target))
-            if os.path.isdir(target):
-                cwd = target
+            # Validate cd target against workspace boundary
+            try:
+                validated_target = validate_cd_target(target, cwd)
+            except WorkspaceViolationError as e:
+                all_success = False
+                step_results.append(
+                    StepExecution(
+                        step=step,
+                        success=False,
+                        error=f"BLOCKED: {e}",
+                    )
+                )
+                continue
+
+            if os.path.isdir(validated_target):
+                cwd = validated_target
                 step_results.append(
                     StepExecution(
                         step=step,
@@ -370,7 +355,7 @@ async def execute_shell(
                     StepExecution(
                         step=step,
                         success=False,
-                        error=f"Directory not found: {target}",
+                        error=f"Directory not found: {validated_target}",
                     )
                 )
             continue
@@ -441,12 +426,10 @@ Respond ONLY with JSON (no markdown fences, no commentary):
 
 async def validate_shell_execution(
     task: str,
-    plan: ShellPlan,
+    plan: Plan,
     execution: ExecutionResult,
 ) -> FinalValidation:
     """Validate that the execution achieved the goal."""
-    llm = get_llm("reasoning")
-
     results_text = "\n".join(
         f"- {sr.step.description}: {'✓' if sr.success else '✗'} "
         + (sr.output if sr.success else sr.error)
@@ -464,13 +447,15 @@ async def validate_shell_execution(
         HumanMessage(content=user_prompt),
     ]
 
-    response = await llm.ainvoke(messages)
-    raw = coerce_response_text(response.content).strip()
+    raw = (await stream_response(messages, "reasoning")).strip()
 
     data = parse_json(raw)
     if data is None:
-        # Default to success if we can't parse
-        return FinalValidation(ok=True, summary=raw)
+        return FinalValidation(
+            ok=False,
+            issues=["Could not parse validation response"],
+            summary="Validation response was not valid JSON",
+        )
 
     return FinalValidation(
         ok=data.get("ok", True),
@@ -480,10 +465,8 @@ async def validate_shell_execution(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Orchestrator (thin wrapper around generic pipeline)
 # ---------------------------------------------------------------------------
-
-MAX_PLAN_ITERATIONS = 5
 
 
 async def run_shell_pipeline(task: str, working_dir: str, unsafe: bool = False):
@@ -503,120 +486,33 @@ async def run_shell_pipeline(task: str, working_dir: str, unsafe: bool = False):
       ("error", str)    - if something went wrong
       ("cwd", str)      - updated working directory
     """
-    # Stage 1: Investigation
-    yield ("status", "Investigating project...")
-    investigation = investigate_shell(working_dir)
-    if investigation.project_type:
-        yield ("status", f"Detected: {investigation.project_type}")
+    pipeline_config = PipelineConfig(max_plan_iterations=5)
 
-    # Stage 2 & 3: Plan with validation loop
-    plan: ShellPlan | None = None
-    plan_issues: list[str] = []
+    # Create wrapper functions that match the expected signatures
+    async def plan_fn(
+        task: str,
+        investigation: Investigation,
+        previous_issues: list[str] | None,
+    ) -> Plan:
+        return await plan_shell(task, investigation, previous_issues)
 
-    for iteration in range(MAX_PLAN_ITERATIONS):
-        # Stage 2: Planning
-        try:
-            if iteration == 0:
-                yield ("status", "Creating plan...")
-            else:
-                yield ("status", f"Revising plan (attempt {iteration + 1})...")
+    async def execute_fn(plan: Plan, cwd: str) -> tuple[ExecutionResult, str]:
+        return await execute_shell(plan, cwd, unsafe)
 
-            plan = await plan_shell(
-                task,
-                investigation,
-                previous_issues=plan_issues if plan_issues else None,
-            )
+    async def validate_fn(
+        task: str,
+        plan: Plan,
+        execution: ExecutionResult,
+    ) -> FinalValidation:
+        return await validate_shell_execution(task, plan, execution)
 
-            if not plan.steps:
-                yield ("error", "No steps in plan")
-                yield ("cwd", working_dir)
-                return
-
-            yield ("status", f"Plan: {plan.summary}")
-
-        except Exception as e:
-            yield ("error", f"Planning failed: {e}")
-            yield ("cwd", working_dir)
-            return
-
-        # Stage 3: Validate Plan
-        try:
-            yield ("status", "Validating plan...")
-            validation = await validate_shell_plan(task, plan, investigation)
-
-            if validation.valid:
-                yield ("status", "Plan validated ✓")
-                break
-            else:
-                plan_issues = validation.issues
-                issues_str = "; ".join(validation.issues[:2])
-                yield ("status", f"Plan issues: {issues_str}")
-                # Continue to next iteration to re-plan
-
-        except Exception as e:
-            # If validation fails, proceed anyway
-            yield ("status", f"Plan validation skipped: {e}")
-            break
-    else:
-        # Max iterations reached, proceed with last plan
-        yield (
-            "status",
-            f"Proceeding after {MAX_PLAN_ITERATIONS} plan attempts",
-        )
-
-    # Note: plan cannot be None here because:
-    # - If plan_shell raises, we return early (line 536)
-    # - If plan_shell returns empty steps, we return early (line 530)
-    # - Otherwise, plan is set to a valid ShellPlan
-    # This check satisfies the type checker without using assert
-    if plan is None:  # pragma: no cover
-        yield ("error", "No plan generated")
-        yield ("cwd", working_dir)
-        return
-
-    # Stage 4: Execution
-    yield ("status", "Executing plan...")
-    cwd = working_dir
-
-    try:
-        for step in plan.steps:
-            yield ("status", step.description)
-
-        execution, cwd = await execute_shell(plan, working_dir, unsafe)
-
-        # Report step results
-        for sr in execution.step_results:
-            if sr.success:
-                if sr.output and sr.output != "✓":
-                    yield ("output", sr.output)
-            else:
-                yield ("error", sr.error)
-
-    except Exception as e:
-        yield ("error", f"Execution failed: {e}")
-        yield ("cwd", cwd)
-        return
-
-    # Stage 5: Final Validation
-    try:
-        yield ("status", "Validating results...")
-        final_validation = await validate_shell_execution(task, plan, execution)
-
-        if final_validation.ok:
-            yield ("result", final_validation.summary or "Task completed successfully")
-        else:
-            issues = "; ".join(final_validation.issues[:2])
-            yield (
-                "result",
-                (
-                    f"{final_validation.summary}. Issues: {issues}"
-                    if issues
-                    else final_validation.summary
-                ),
-            )
-
-    except Exception as e:
-        # If validation fails, still report completion
-        yield ("result", f"Execution complete (validation error: {e})")
-
-    yield ("cwd", cwd)
+    async for event in run_pipeline(
+        task=task,
+        working_dir=working_dir,
+        config=pipeline_config,
+        investigate_fn=investigate_shell,
+        plan_fn=plan_fn,
+        execute_fn=execute_fn,
+        validate_fn=validate_fn,
+    ):
+        yield event

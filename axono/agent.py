@@ -16,7 +16,15 @@ from axono import config
 from axono.coding import run_coding_pipeline
 from axono.intent import Intent, analyze_intent
 from axono.safety import judge_command
-from axono.shell import run_shell_pipeline
+from axono.shell import _get_dir_context, run_shell_pipeline
+from axono.workspace import (
+    WorkspaceViolationError,
+    check_command_paths,
+    get_workspace_root,
+    is_path_within_workspace,
+    validate_cd_target,
+    validate_path,
+)
 
 try:
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -54,11 +62,20 @@ async def bash(command: str, unsafe: bool = False) -> str:
     dangerous it will be blocked. Set ``unsafe=True`` to bypass the safety
     check — only do this when the user has explicitly confirmed.
 
+    All commands are restricted to operate within the workspace boundary.
+    Attempts to access paths outside the workspace will be blocked.
+
     Args:
         command: The shell command to execute.
         unsafe: Skip the safety check. Only use after the user confirms.
     """
     global _CURRENT_DIR
+
+    # Check workspace boundary violations
+    workspace_error = check_command_paths(command, _CURRENT_DIR)
+    if workspace_error:
+        return f"BLOCKED: {workspace_error}\n__CWD__:{_CURRENT_DIR}"
+
     if not unsafe:
         try:
             verdict = await judge_command(command)
@@ -77,14 +94,17 @@ async def bash(command: str, unsafe: bool = False) -> str:
     # Handle pure "cd <path>" command
     if cmd.startswith("cd ") and "&&" not in cmd and ";" not in cmd:
         target = cmd[3:].strip()
-        target = os.path.expanduser(target)
-        if not os.path.isabs(target):
-            target = os.path.abspath(os.path.join(cwd, target))
-        if os.path.isdir(target):
-            _CURRENT_DIR = target
+        # Validate cd target against workspace boundary
+        try:
+            validated_target = validate_cd_target(target, cwd)
+        except WorkspaceViolationError as e:
+            return f"BLOCKED: {e}\n__CWD__:{_CURRENT_DIR}"
+
+        if os.path.isdir(validated_target):
+            _CURRENT_DIR = validated_target
             return f"__CWD__:{_CURRENT_DIR}"
         else:
-            return f"Error: Directory not found: {target}\n__CWD__:{_CURRENT_DIR}"
+            return f"Error: Directory not found: {validated_target}\n__CWD__:{_CURRENT_DIR}"
 
     # Check if command contains cd (we'll need to track the final directory)
     has_cd = (
@@ -125,7 +145,16 @@ async def bash(command: str, unsafe: bool = False) -> str:
             lines = output.strip().split("\n")
             potential_dir = lines[-1].strip()
             if os.path.isdir(potential_dir):
-                _CURRENT_DIR = potential_dir
+                # Validate the final directory against workspace boundary
+                if is_path_within_workspace(potential_dir):
+                    _CURRENT_DIR = potential_dir
+                else:
+                    # Command tried to escape workspace - block and reset
+                    return (
+                        f"BLOCKED: Command attempted to change to directory "
+                        f"'{potential_dir}' which is outside the workspace boundary.\n"
+                        f"__CWD__:{_CURRENT_DIR}"
+                    )
                 # Remove the pwd output from display
                 output = "\n".join(lines[:-1]) if len(lines) > 1 else ""
 
@@ -152,13 +181,21 @@ async def code(task: str, working_dir: str) -> str:
     refactor code. It scans the project, plans changes, generates code, writes
     files, and validates the result.
 
+    All operations are restricted to the workspace boundary.
+
     Args:
         task: A description of what the user wants done (e.g. "implement the
               CalculateAnnuity method in AnnuityCalculator.cs").
         working_dir: Absolute path to the project directory to work in.
     """
+    # Validate working_dir against workspace boundary
+    try:
+        validated_dir = validate_path(working_dir, "working directory")
+    except WorkspaceViolationError as e:
+        return f"BLOCKED: {e}"
+
     output_parts: list[str] = []
-    async for event_type, data in run_coding_pipeline(task, working_dir):
+    async for event_type, data in run_coding_pipeline(task, validated_dir):
         if event_type == "status":
             output_parts.append(f"[status] {data}")
         elif event_type == "result":
@@ -179,6 +216,7 @@ async def shell(task: str, working_dir: str, unsafe: bool = False) -> str:
     3. Verify the result
 
     For simple single commands, it will detect this and run directly.
+    All operations are restricted to the workspace boundary.
 
     Args:
         task: What the user wants to do (e.g. "install numpy and pandas").
@@ -186,6 +224,13 @@ async def shell(task: str, working_dir: str, unsafe: bool = False) -> str:
         unsafe: Skip safety checks. Only use after user confirms.
     """
     global _CURRENT_DIR
+
+    # Validate working_dir against workspace boundary
+    try:
+        validated_dir = validate_path(working_dir, "working directory")
+    except WorkspaceViolationError as e:
+        return f"BLOCKED: {e}"
+
     new_cwd = None
     steps_run = 0
     last_status = ""
@@ -193,7 +238,7 @@ async def shell(task: str, working_dir: str, unsafe: bool = False) -> str:
     result_msg = ""
     errors: list[str] = []
 
-    async for event_type, data in run_shell_pipeline(task, working_dir, unsafe):
+    async for event_type, data in run_shell_pipeline(task, validated_dir, unsafe):
         if event_type == "status":
             last_status = str(data)
             steps_run += 1
@@ -221,10 +266,16 @@ async def shell(task: str, working_dir: str, unsafe: bool = False) -> str:
     if result_msg:
         output_parts.append(result_msg)
 
-    # Update global cwd if changed
-    if new_cwd and new_cwd != working_dir:
-        _CURRENT_DIR = new_cwd
-        output_parts.append(f"__CWD__:{new_cwd}")
+    # Update global cwd if changed (only if within workspace)
+    if new_cwd and new_cwd != validated_dir:
+        if is_path_within_workspace(new_cwd):
+            _CURRENT_DIR = new_cwd
+            output_parts.append(f"__CWD__:{new_cwd}")
+        else:
+            output_parts.append(
+                f"Warning: Shell tried to change to '{new_cwd}' "
+                f"which is outside the workspace boundary. CWD unchanged."
+            )
 
     return "\n".join(output_parts) if output_parts else "(done)"
 
@@ -250,14 +301,20 @@ async def _load_mcp_tools() -> list:
         return []
 
 
-async def build_agent(on_status=None):
+async def build_agent(on_status=None, checkpointer=None):
     """Build and return the LangChain agent graph.
 
     Args:
         on_status: Optional callback that receives status messages (str).
+        checkpointer: Optional LangGraph checkpointer for conversation persistence.
     """
+    global _CURRENT_DIR
+    workspace = get_workspace_root()
+    if workspace:
+        _CURRENT_DIR = workspace
+
     llm = init_chat_model(
-        model=config.get_model_name("instruction"),
+        model=config.get_model_name("instruction") or "default",
         model_provider=config.LLM_MODEL_PROVIDER,
         base_url=config.LLM_BASE_URL,
         api_key=config.LLM_API_KEY,
@@ -284,6 +341,7 @@ async def build_agent(on_status=None):
         model=llm,
         tools=all_tools,
         system_prompt=system_prompt,
+        checkpointer=checkpointer,
     )
     return graph
 
@@ -309,7 +367,7 @@ async def _run_chat(llm, messages) -> AsyncGenerator[tuple[str, Any], None]:
 
 
 async def _run_task_step(
-    graph, messages, task: str, cwd: str
+    graph, messages, task: str, cwd: str, thread_id: str | None = None
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Execute a single task step using the agent.
 
@@ -317,20 +375,29 @@ async def _run_task_step(
     """
     from langchain_core.messages import HumanMessage as HM
 
-    # Build a focused prompt for this specific task
+    # Build a focused prompt with workspace context
+    dir_listing, project_type = _get_dir_context(cwd)
     task_prompt = (
         f"Execute this specific task: {task}\n"
         f"Working directory: {cwd}\n"
-        "Complete this task and report the result concisely."
+        f"Directory contents: {dir_listing}\n"
     )
+    if project_type:
+        task_prompt += f"Detected project type: {project_type}\n"
+    task_prompt += "Complete this task and report the result concisely."
 
     # Create messages with the task-specific prompt
     task_messages = list(messages) + [HM(content=task_prompt)]
     inputs = {"messages": task_messages}
     collected_messages = list(messages)
 
+    # Build config with thread_id for checkpointing
+    run_config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+
     try:
-        async for update in graph.astream(inputs, stream_mode="updates"):
+        async for update in graph.astream(
+            inputs, stream_mode="updates", config=run_config
+        ):
             for node_name, state_update in update.items():
                 new_msgs = state_update.get("messages", [])
                 for msg in new_msgs:
@@ -359,7 +426,7 @@ async def _run_task_step(
 
 
 async def run_agent(
-    graph, messages, cwd: str = "~"
+    graph, messages, cwd: str = "~", thread_id: str | None = None
 ) -> AsyncGenerator[tuple[str, Any], None]:
     """Run the agent with intent analysis.
 
@@ -371,6 +438,7 @@ async def run_agent(
         graph: The agent graph (contains LLM and tools).
         messages: Conversation history.
         cwd: Current working directory.
+        thread_id: Optional conversation thread ID for checkpointing.
 
     Yields tuples of (event_type, data):
       - ("intent", Intent)       - Classification result
@@ -420,7 +488,7 @@ async def run_agent(
         from langchain.chat_models import init_chat_model
 
         llm = init_chat_model(
-            model=config.get_model_name("instruction"),
+            model=config.get_model_name("instruction") or "default",
             model_provider=config.LLM_MODEL_PROVIDER,
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,
@@ -441,7 +509,9 @@ async def run_agent(
                 yield ("task_start", task)
 
                 # Execute this task step
-                async for event in _run_task_step(graph, collected_messages, task, cwd):
+                async for event in _run_task_step(
+                    graph, collected_messages, task, cwd, thread_id
+                ):
                     if event[0] == "messages":
                         collected_messages = event[1]
                     elif event[0] == "error":
@@ -457,9 +527,14 @@ async def run_agent(
             # No task list but task intent - fall back to normal agent
             yield ("error", "Task intent but no tasks identified")
             inputs = {"messages": list(messages)}
+            run_config = (
+                {"configurable": {"thread_id": thread_id}} if thread_id else None
+            )
 
             try:
-                async for update in graph.astream(inputs, stream_mode="updates"):
+                async for update in graph.astream(
+                    inputs, stream_mode="updates", config=run_config
+                ):
                     for node_name, state_update in update.items():
                         new_msgs = state_update.get("messages", [])
                         for msg in new_msgs:

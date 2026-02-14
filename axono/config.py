@@ -29,6 +29,9 @@ _DEFAULTS = {
     "investigation_enabled": "true",
     "max_context_files": "8",
     "max_context_chars": "30000",
+    "llm_investigation": "false",  # Use LLM to rank files during investigation
+    "embedding_model": "",  # Empty means use default (all-MiniLM-L6-v2)
+    "embedding_db_path": "",  # Empty means ~/.axono/embeddings.db
 }
 
 
@@ -68,6 +71,9 @@ def _get(key: str) -> str:
         "investigation_enabled": "INVESTIGATION_ENABLED",
         "max_context_files": "MAX_CONTEXT_FILES",
         "max_context_chars": "MAX_CONTEXT_CHARS",
+        "llm_investigation": "LLM_INVESTIGATION",
+        "embedding_model": "EMBEDDING_MODEL",
+        "embedding_db_path": "EMBEDDING_DB_PATH",
     }
 
     # 4) env var  (highest priority)
@@ -101,19 +107,18 @@ def get_model_name(model_type: str = "instruction") -> str:
 
     Model types:
       - "instruction": For general instruction-following tasks (agent, coding, etc.)
-      - "reasoning": For tasks requiring deeper reasoning (currently same as instruction)
+      - "reasoning": For tasks requiring deeper reasoning
 
     Resolution order:
       1. If reasoning_model is requested and set, use it
       2. If instruction_model is set, use it
-      3. If model_name is set, use it
-      4. Empty string (let the backend use its loaded model)
+      3. Empty string (let the backend use its currently loaded model)
     """
     if model_type == "reasoning" and LLM_REASONING_MODEL:
         return LLM_REASONING_MODEL
     if LLM_INSTRUCTION_MODEL:
         return LLM_INSTRUCTION_MODEL
-    return LLM_MODEL_NAME  # May be empty, which is valid for LM Studio
+    return ""  # Empty string signals to use the backend's currently loaded model
 
 
 INVESTIGATION_ENABLED: bool = _get("investigation_enabled").strip().lower() in {
@@ -122,8 +127,24 @@ INVESTIGATION_ENABLED: bool = _get("investigation_enabled").strip().lower() in {
     "yes",
     "on",
 }
+LLM_INVESTIGATION: bool = _get("llm_investigation").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 MAX_CONTEXT_FILES: int = int(_get("max_context_files"))
 MAX_CONTEXT_CHARS: int = int(_get("max_context_chars"))
+
+EMBEDDING_MODEL: str = _get("embedding_model")
+
+
+def get_embedding_db_path() -> Path:
+    """Return the path to the embeddings database."""
+    custom_path = _get("embedding_db_path")
+    if custom_path:
+        return Path(custom_path)
+    return _get_data_dir() / "embeddings.db"
 
 
 # ── MCP server configuration ────────────────────────────────────────
@@ -192,3 +213,75 @@ def save_config(settings: dict[str, str]) -> Path:
     path = config_path()
     path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+# ── trusted folders configuration ─────────────────────────────────────
+
+
+def _trusted_folders_path() -> Path:
+    """Return the path to the trusted folders file."""
+    return config_dir() / "trusted_folders.json"
+
+
+def load_trusted_folders() -> list[str]:
+    """Load the list of trusted workspace folders.
+
+    Returns a list of absolute paths that the user has trusted.
+    """
+    path = _trusted_folders_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(f) for f in data if isinstance(f, str)]
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_trusted_folders(folders: list[str]) -> Path:
+    """Save the list of trusted workspace folders.
+
+    Args:
+        folders: List of absolute paths to trusted folders.
+
+    Returns:
+        The path written to.
+    """
+    d = config_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    path = _trusted_folders_path()
+    path.write_text(json.dumps(folders, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def add_trusted_folder(folder: str) -> list[str]:
+    """Add a folder to the trusted folders list.
+
+    Args:
+        folder: Absolute path to the folder to trust.
+
+    Returns:
+        The updated list of trusted folders.
+    """
+    folders = load_trusted_folders()
+    # Normalize the path
+    normalized = os.path.abspath(os.path.expanduser(folder))
+    if normalized not in folders:
+        folders.append(normalized)
+        save_trusted_folders(folders)
+    return folders
+
+
+def is_folder_trusted(folder: str) -> bool:
+    """Check if a folder is in the trusted folders list.
+
+    Args:
+        folder: Absolute path to check.
+
+    Returns:
+        True if the folder is trusted.
+    """
+    normalized = os.path.abspath(os.path.expanduser(folder))
+    return normalized in load_trusted_folders()

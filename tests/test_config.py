@@ -66,6 +66,7 @@ def _reload_config(env=None, config=None, config_raw=None):
         "INVESTIGATION_ENABLED",
         "MAX_CONTEXT_FILES",
         "MAX_CONTEXT_CHARS",
+        "LLM_INVESTIGATION",
         "MCP_CONFIG_PATH",
     ):
         patch_env.setdefault(var, "")
@@ -148,6 +149,10 @@ class TestDefaults:
         cfg = _reload_config()
         assert cfg.MAX_CONTEXT_CHARS == 30_000
 
+    def test_default_llm_investigation(self):
+        cfg = _reload_config()
+        assert cfg.LLM_INVESTIGATION is False
+
 
 # ---------------------------------------------------------------------------
 # Tests for config-file overrides
@@ -192,6 +197,13 @@ class TestConfigFile:
             cfg = _reload_config(config={"investigation_enabled": falsy})
             assert cfg.INVESTIGATION_ENABLED is False, f"Expected False for {falsy!r}"
 
+    def test_llm_investigation_boolean(self):
+        cfg = _reload_config(config={"llm_investigation": "true"})
+        assert cfg.LLM_INVESTIGATION is True
+
+        cfg = _reload_config(config={"llm_investigation": "false"})
+        assert cfg.LLM_INVESTIGATION is False
+
     def test_invalid_json_falls_back_to_defaults(self):
         """Malformed config.json is silently ignored; defaults apply."""
         cfg = _reload_config(config_raw="not valid json{{{")
@@ -232,6 +244,7 @@ class TestEnvVarOverrides:
             "LLM_API_KEY": "env-k",
             "COMMAND_TIMEOUT": "99",
             "INVESTIGATION_ENABLED": "false",
+            "LLM_INVESTIGATION": "true",
             "MAX_CONTEXT_FILES": "42",
             "MAX_CONTEXT_CHARS": "50000",
         }
@@ -242,6 +255,7 @@ class TestEnvVarOverrides:
         assert cfg.LLM_API_KEY == "env-k"
         assert cfg.COMMAND_TIMEOUT == 99
         assert cfg.INVESTIGATION_ENABLED is False
+        assert cfg.LLM_INVESTIGATION is True
         assert cfg.MAX_CONTEXT_FILES == 42
         assert cfg.MAX_CONTEXT_CHARS == 50_000
 
@@ -357,16 +371,15 @@ class TestModelTypes:
         assert cfg.get_model_name("reasoning") == ""
 
     def test_get_model_name_uses_model_name(self):
-        """When only model_name is set, both types use it."""
+        """model_name is no longer used; should return empty string."""
         cfg = _reload_config(config={"model_name": "base-model"})
-        assert cfg.get_model_name("instruction") == "base-model"
-        assert cfg.get_model_name("reasoning") == "base-model"
+        assert cfg.get_model_name("instruction") == ""
+        assert cfg.get_model_name("reasoning") == ""
 
     def test_get_model_name_instruction_model_overrides(self):
-        """instruction_model overrides model_name for both types."""
+        """instruction_model is used for both types when set."""
         cfg = _reload_config(
             config={
-                "model_name": "base-model",
                 "instruction_model": "instruct-model",
             }
         )
@@ -377,7 +390,6 @@ class TestModelTypes:
         """reasoning_model overrides for reasoning type only."""
         cfg = _reload_config(
             config={
-                "model_name": "base-model",
                 "instruction_model": "instruct-model",
                 "reasoning_model": "reason-model",
             }
@@ -386,14 +398,13 @@ class TestModelTypes:
         assert cfg.get_model_name("reasoning") == "reason-model"
 
     def test_get_model_name_reasoning_without_instruction(self):
-        """reasoning_model with empty instruction_model falls back to model_name."""
+        """reasoning_model alone doesn't fall back for instruction type."""
         cfg = _reload_config(
             config={
-                "model_name": "base-model",
                 "reasoning_model": "reason-model",
             }
         )
-        assert cfg.get_model_name("instruction") == "base-model"
+        assert cfg.get_model_name("instruction") == ""
         assert cfg.get_model_name("reasoning") == "reason-model"
 
     def test_env_vars_override(self):
@@ -410,3 +421,219 @@ class TestModelTypes:
         )
         assert cfg.get_model_name("instruction") == "env-instruct"
         assert cfg.get_model_name("reasoning") == "env-reason"
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_embedding_db_path()
+# ---------------------------------------------------------------------------
+
+
+class TestGetEmbeddingDbPath:
+    """Tests for the embedding database path resolver."""
+
+    def test_default_path(self, tmp_path):
+        """Without custom config, returns <data_dir>/embeddings.db."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.get_embedding_db_path()
+        assert result == tmp_path / ".axono" / "embeddings.db"
+
+    def test_custom_path(self, tmp_path):
+        """When embedding_db_path is set in config, that path is used."""
+        custom = str(tmp_path / "custom" / "embed.db")
+        # Write config to tmp_path so _reload_config finds it with HOME=tmp_path
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(exist_ok=True)
+        (axono_dir / "config.json").write_text(
+            json.dumps({"embedding_db_path": custom})
+        )
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.get_embedding_db_path()
+        assert result == Path(custom)
+
+
+# ---------------------------------------------------------------------------
+# Tests for onboarding helpers (config_dir, config_path, needs_onboarding)
+# ---------------------------------------------------------------------------
+
+
+class TestOnboardingHelpers:
+    """Tests for config_dir(), config_path(), and needs_onboarding()."""
+
+    def test_config_dir(self, tmp_path):
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.config_dir() == tmp_path / ".axono"
+
+    def test_config_path(self, tmp_path):
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.config_path() == tmp_path / ".axono" / "config.json"
+
+    def test_needs_onboarding_true(self, tmp_path):
+        """Returns True when config.json does not exist."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.needs_onboarding() is True
+
+    def test_needs_onboarding_false(self, tmp_path):
+        """Returns False when config.json already exists."""
+        # Write config to tmp_path directly so needs_onboarding finds it
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(exist_ok=True)
+        (axono_dir / "config.json").write_text(
+            json.dumps({"base_url": "http://localhost:1234/v1"})
+        )
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.needs_onboarding() is False
+
+
+# ---------------------------------------------------------------------------
+# Tests for save_config()
+# ---------------------------------------------------------------------------
+
+
+class TestSaveConfig:
+    """Tests for writing the config file."""
+
+    def test_save_config_writes_json(self, tmp_path):
+        """save_config creates the directory and writes valid JSON."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        settings = {"base_url": "http://example:5000/v1", "model_name": "test"}
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.save_config(settings)
+
+        assert result == tmp_path / ".axono" / "config.json"
+        assert result.is_file()
+        content = json.loads(result.read_text(encoding="utf-8"))
+        assert content == settings
+
+
+# ---------------------------------------------------------------------------
+# Tests for _trusted_folders_path()
+# ---------------------------------------------------------------------------
+
+
+class TestTrustedFoldersPath:
+    """Tests for the trusted folders path helper."""
+
+    def test_returns_correct_path(self, tmp_path):
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg._trusted_folders_path()
+        assert result == tmp_path / ".axono" / "trusted_folders.json"
+
+
+# ---------------------------------------------------------------------------
+# Tests for load_trusted_folders()
+# ---------------------------------------------------------------------------
+
+
+class TestLoadTrustedFolders:
+    """Tests for loading trusted folders from disk."""
+
+    def test_no_file_returns_empty(self, tmp_path):
+        """When the file doesn't exist, returns an empty list."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.load_trusted_folders() == []
+
+    def test_valid_file(self, tmp_path):
+        """Loads a well-formed JSON list of strings."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(exist_ok=True)
+        (axono_dir / "trusted_folders.json").write_text(
+            json.dumps(["/home/user/project1", "/home/user/project2"])
+        )
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.load_trusted_folders()
+        assert result == ["/home/user/project1", "/home/user/project2"]
+
+    def test_non_list_json_returns_empty(self, tmp_path):
+        """When file contains a non-list JSON value, returns empty list."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(exist_ok=True)
+        (axono_dir / "trusted_folders.json").write_text(json.dumps({"a": "dict"}))
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.load_trusted_folders() == []
+
+    def test_invalid_json_returns_empty(self, tmp_path):
+        """Malformed JSON is silently ignored."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        axono_dir = tmp_path / ".axono"
+        axono_dir.mkdir(exist_ok=True)
+        (axono_dir / "trusted_folders.json").write_text("not valid json{{{")
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.load_trusted_folders() == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for save_trusted_folders()
+# ---------------------------------------------------------------------------
+
+
+class TestSaveTrustedFolders:
+    """Tests for saving trusted folders to disk."""
+
+    def test_save_writes_file(self, tmp_path):
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        folders = ["/home/user/project1", "/tmp/project2"]
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.save_trusted_folders(folders)
+
+        assert result == tmp_path / ".axono" / "trusted_folders.json"
+        assert result.is_file()
+        content = json.loads(result.read_text(encoding="utf-8"))
+        assert content == folders
+
+
+# ---------------------------------------------------------------------------
+# Tests for add_trusted_folder()
+# ---------------------------------------------------------------------------
+
+
+class TestAddTrustedFolder:
+    """Tests for adding a folder to the trusted list."""
+
+    def test_adds_new_folder(self, tmp_path):
+        """A new folder is appended and saved."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = cfg.add_trusted_folder("/home/user/project")
+        normalized = os.path.abspath("/home/user/project")
+        assert normalized in result
+
+    def test_does_not_duplicate(self, tmp_path):
+        """Adding the same folder twice does not create duplicates."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            cfg.add_trusted_folder("/home/user/project")
+            result = cfg.add_trusted_folder("/home/user/project")
+        normalized = os.path.abspath("/home/user/project")
+        assert result.count(normalized) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for is_folder_trusted()
+# ---------------------------------------------------------------------------
+
+
+class TestIsFolderTrusted:
+    """Tests for checking folder trust status."""
+
+    def test_trusted_folder(self, tmp_path):
+        """Returns True for a folder that has been added."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            cfg.add_trusted_folder("/home/user/project")
+            assert cfg.is_folder_trusted("/home/user/project") is True
+
+    def test_untrusted_folder(self, tmp_path):
+        """Returns False for a folder that has not been added."""
+        cfg = _reload_config(env={"HOME": str(tmp_path)})
+        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            assert cfg.is_folder_trusted("/some/random/path") is False

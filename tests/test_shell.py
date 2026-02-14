@@ -5,16 +5,13 @@ import os
 import subprocess
 import sys
 from io import StringIO
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 from axono import shell
-from axono.pipeline import PlanStep
+from axono.pipeline import ExecutionResult, Investigation, Plan, PlanStep, StepExecution
 from axono.shell import (
-    ShellInvestigation,
-    ShellPlan,
     StepResult,
     _detect_project_type,
     _get_dir_context,
@@ -24,8 +21,18 @@ from axono.shell import (
     plan_shell,
     run_shell_pipeline,
     validate_shell_execution,
-    validate_shell_plan,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_workspace():
+    """Reset workspace root after every test."""
+    from axono.workspace import clear_workspace_root
+
+    clear_workspace_root()
+    yield
+    clear_workspace_root()
+
 
 # ---------------------------------------------------------------------------
 # StepResult dataclass
@@ -57,50 +64,6 @@ class TestStepResult:
         )
         assert result.blocked is True
         assert result.block_reason == "Dangerous command"
-
-
-# ---------------------------------------------------------------------------
-# ShellInvestigation dataclass
-# ---------------------------------------------------------------------------
-
-
-class TestShellInvestigation:
-
-    def test_defaults(self):
-        inv = ShellInvestigation(cwd="/tmp", dir_listing="file1, file2")
-        assert inv.project_type is None
-        assert inv.summary == ""
-
-    def test_with_project_type(self):
-        inv = ShellInvestigation(
-            cwd="/project",
-            dir_listing="Cargo.toml, src",
-            project_type="Rust",
-            summary="Rust project",
-        )
-        assert inv.project_type == "Rust"
-
-
-# ---------------------------------------------------------------------------
-# ShellPlan dataclass
-# ---------------------------------------------------------------------------
-
-
-class TestShellPlan:
-
-    def test_defaults(self):
-        plan = ShellPlan(summary="Build project")
-        assert plan.steps == []
-        assert plan.raw == ""
-
-    def test_with_steps(self):
-        steps = [
-            PlanStep(description="Install deps", action={"command": "npm install"}),
-            PlanStep(description="Run build", action={"command": "npm run build"}),
-        ]
-        plan = ShellPlan(summary="Build Node.js project", steps=steps)
-        assert len(plan.steps) == 2
-        assert plan.steps[0].description == "Install deps"
 
 
 # ---------------------------------------------------------------------------
@@ -404,14 +367,6 @@ class TestInvestigateShell:
 # ---------------------------------------------------------------------------
 
 
-def _fake_llm(content):
-    """Return a mock LLM whose ``ainvoke`` resolves to the given content."""
-    response = SimpleNamespace(content=content)
-    llm = mock.AsyncMock()
-    llm.ainvoke.return_value = response
-    return llm
-
-
 class TestPlanShell:
 
     @pytest.mark.asyncio
@@ -425,13 +380,16 @@ class TestPlanShell:
                 ],
             }
         )
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(
+        inv = Investigation(
             cwd=str(tmp_path), dir_listing="package.json", project_type="Node.js"
         )
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ):
             result = await plan_shell("Build the project", inv)
 
         assert result.summary == "Build project"
@@ -441,11 +399,13 @@ class TestPlanShell:
 
     @pytest.mark.asyncio
     async def test_handles_parse_failure(self, tmp_path):
-        llm = _fake_llm("Not valid JSON")
+        inv = Investigation(cwd=str(tmp_path), dir_listing="")
 
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="")
-
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value="Not valid JSON",
+        ):
             result = await plan_shell("task", inv)
 
         assert "Not valid JSON" in result.summary
@@ -454,16 +414,19 @@ class TestPlanShell:
     @pytest.mark.asyncio
     async def test_includes_project_type_in_prompt(self, tmp_path):
         plan_json = json.dumps({"summary": "s", "steps": []})
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(
+        inv = Investigation(
             cwd=str(tmp_path), dir_listing="", project_type="Rust (use: cargo build)"
         )
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ) as mock_stream:
             await plan_shell("build", inv)
 
-        call_args = llm.ainvoke.call_args
+        call_args = mock_stream.call_args
         user_msg = call_args[0][0][1].content
         assert "Rust" in user_msg
 
@@ -479,11 +442,14 @@ class TestPlanShell:
                 ],
             }
         )
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="")
+        inv = Investigation(cwd=str(tmp_path), dir_listing="")
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ):
             result = await plan_shell("task", inv)
 
         assert len(result.steps) == 1
@@ -498,16 +464,19 @@ class TestPlanShell:
                 "steps": [{"description": "Fixed step", "command": "npm install"}],
             }
         )
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="package.json")
+        inv = Investigation(cwd=str(tmp_path), dir_listing="package.json")
         previous_issues = ["Missing install step", "Build would fail without deps"]
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ) as mock_stream:
             result = await plan_shell("build", inv, previous_issues=previous_issues)
 
         # Verify issues were included in the prompt
-        call_args = llm.ainvoke.call_args
+        call_args = mock_stream.call_args
         user_msg = call_args[0][0][1].content
         assert "Previous Plan Issues" in user_msg
         assert "Missing install step" in user_msg
@@ -519,14 +488,17 @@ class TestPlanShell:
     async def test_previous_issues_none_no_section(self, tmp_path):
         """Test that no issues section is added when previous_issues is None."""
         plan_json = json.dumps({"summary": "Plan", "steps": []})
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="")
+        inv = Investigation(cwd=str(tmp_path), dir_listing="")
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ) as mock_stream:
             await plan_shell("task", inv, previous_issues=None)
 
-        call_args = llm.ainvoke.call_args
+        call_args = mock_stream.call_args
         user_msg = call_args[0][0][1].content
         assert "Previous Plan Issues" not in user_msg
 
@@ -534,71 +506,19 @@ class TestPlanShell:
     async def test_previous_issues_empty_no_section(self, tmp_path):
         """Test that no issues section is added when previous_issues is empty."""
         plan_json = json.dumps({"summary": "Plan", "steps": []})
-        llm = _fake_llm(plan_json)
 
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="")
+        inv = Investigation(cwd=str(tmp_path), dir_listing="")
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ) as mock_stream:
             await plan_shell("task", inv, previous_issues=[])
 
-        call_args = llm.ainvoke.call_args
+        call_args = mock_stream.call_args
         user_msg = call_args[0][0][1].content
         assert "Previous Plan Issues" not in user_msg
-
-
-# ---------------------------------------------------------------------------
-# validate_shell_plan
-# ---------------------------------------------------------------------------
-
-
-class TestValidateShellPlan:
-
-    @pytest.mark.asyncio
-    async def test_valid_plan(self, tmp_path):
-        resp = json.dumps(
-            {
-                "valid": True,
-                "issues": [],
-                "suggestions": [],
-                "summary": "Plan looks good",
-            }
-        )
-        llm = _fake_llm(resp)
-
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="package.json")
-        plan = ShellPlan(
-            summary="Build project",
-            steps=[PlanStep(description="Run build", action={"command": "npm build"})],
-        )
-
-        with mock.patch("axono.pipeline.get_llm", return_value=llm):
-            result = await validate_shell_plan("Build project", plan, inv)
-
-        assert result.valid is True
-
-    @pytest.mark.asyncio
-    async def test_invalid_plan(self, tmp_path):
-        resp = json.dumps(
-            {
-                "valid": False,
-                "issues": ["Missing install step"],
-                "suggestions": ["Add npm install first"],
-                "summary": "Incomplete",
-            }
-        )
-        llm = _fake_llm(resp)
-
-        inv = ShellInvestigation(cwd=str(tmp_path), dir_listing="package.json")
-        plan = ShellPlan(
-            summary="Build project",
-            steps=[PlanStep(description="Run build", action={"command": "npm build"})],
-        )
-
-        with mock.patch("axono.pipeline.get_llm", return_value=llm):
-            result = await validate_shell_plan("Build project", plan, inv)
-
-        assert result.valid is False
-        assert "Missing install step" in result.issues
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +530,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_successful_execution(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="List files",
             steps=[PlanStep(description="List files", action={"command": "ls"})],
         )
@@ -627,7 +547,7 @@ class TestExecuteShell:
         subdir = tmp_path / "subdir"
         subdir.mkdir()
 
-        plan = ShellPlan(
+        plan = Plan(
             summary="Navigate",
             steps=[
                 PlanStep(description="Go to subdir", action={"command": "cd subdir"})
@@ -642,7 +562,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_cd_nonexistent(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Navigate",
             steps=[
                 PlanStep(description="Go nowhere", action={"command": "cd nonexistent"})
@@ -656,7 +576,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_cd_with_tilde(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Go home",
             steps=[PlanStep(description="Go home", action={"command": "cd ~"})],
         )
@@ -668,7 +588,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_blocked_command(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Dangerous",
             steps=[PlanStep(description="Delete", action={"command": "rm -rf /"})],
         )
@@ -684,7 +604,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_failed_command(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Fail",
             steps=[PlanStep(description="Fail", action={"command": "exit 1"})],
         )
@@ -697,7 +617,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_empty_command_skipped(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Empty",
             steps=[PlanStep(description="Empty", action={"command": ""})],
         )
@@ -708,7 +628,7 @@ class TestExecuteShell:
 
     @pytest.mark.asyncio
     async def test_multiple_steps(self, tmp_path):
-        plan = ShellPlan(
+        plan = Plan(
             summary="Multi",
             steps=[
                 PlanStep(description="Step 1", action={"command": "echo one"}),
@@ -732,8 +652,6 @@ class TestValidateShellExecution:
 
     @pytest.mark.asyncio
     async def test_successful_validation(self, tmp_path):
-        from axono.pipeline import ExecutionResult, StepExecution
-
         resp = json.dumps(
             {
                 "ok": True,
@@ -741,16 +659,19 @@ class TestValidateShellExecution:
                 "summary": "Task completed",
             }
         )
-        llm = _fake_llm(resp)
 
-        plan = ShellPlan(summary="Build", steps=[])
+        plan = Plan(summary="Build", steps=[])
         step = PlanStep(description="Build", action={"command": "npm build"})
         execution = ExecutionResult(
             success=True,
             step_results=[StepExecution(step=step, success=True, output="Built")],
         )
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=resp,
+        ):
             result = await validate_shell_execution("Build project", plan, execution)
 
         assert result.ok is True
@@ -758,8 +679,6 @@ class TestValidateShellExecution:
 
     @pytest.mark.asyncio
     async def test_failed_validation(self, tmp_path):
-        from axono.pipeline import ExecutionResult, StepExecution
-
         resp = json.dumps(
             {
                 "ok": False,
@@ -767,35 +686,39 @@ class TestValidateShellExecution:
                 "summary": "Incomplete",
             }
         )
-        llm = _fake_llm(resp)
 
-        plan = ShellPlan(summary="Build", steps=[])
+        plan = Plan(summary="Build", steps=[])
         step = PlanStep(description="Build", action={"command": "npm build"})
         execution = ExecutionResult(
             success=False,
             step_results=[StepExecution(step=step, success=False, error="Error")],
         )
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=resp,
+        ):
             result = await validate_shell_execution("Build project", plan, execution)
 
         assert result.ok is False
         assert "Build failed" in result.issues
 
     @pytest.mark.asyncio
-    async def test_parse_failure_defaults_to_ok(self, tmp_path):
-        from axono.pipeline import ExecutionResult
-
-        llm = _fake_llm("All looks good!")
-
-        plan = ShellPlan(summary="Build", steps=[])
+    async def test_parse_failure_defaults_to_not_ok(self, tmp_path):
+        plan = Plan(summary="Build", steps=[])
         execution = ExecutionResult(success=True, step_results=[])
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value="All looks good!",
+        ):
             result = await validate_shell_execution("task", plan, execution)
 
-        assert result.ok is True
-        assert "All looks good!" in result.summary
+        assert result.ok is False
+        assert len(result.issues) >= 1
+        assert "not valid JSON" in result.summary
 
 
 # ---------------------------------------------------------------------------
@@ -821,25 +744,20 @@ class TestRunShellPipeline:
 
         call_count = 0
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             nonlocal call_count
             call_count += 1
             system_msg = messages[0].content
 
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true, "summary": "ok"}')
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -877,27 +795,22 @@ class TestRunShellPipeline:
 
         validation_call = 0
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             nonlocal validation_call
             system_msg = messages[0].content
 
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
                 validation_call += 1
                 if validation_call == 1:
-                    return SimpleNamespace(content=plan_invalid)
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true, "summary": "ok"}')
+                    return plan_invalid
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -930,7 +843,7 @@ class TestRunShellPipeline:
         plan_call_count = 0
         captured_user_msgs = []
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             nonlocal plan_call_count
             system_msg = messages[0].content
             user_msg = messages[1].content
@@ -938,29 +851,22 @@ class TestRunShellPipeline:
             if "shell planning agent" in system_msg:
                 plan_call_count += 1
                 captured_user_msgs.append(user_msg)
-                return SimpleNamespace(
-                    content=json.dumps(
-                        {
-                            "summary": f"Plan {plan_call_count}",
-                            "steps": [{"description": "Step", "command": "echo ok"}],
-                        }
-                    )
+                return json.dumps(
+                    {
+                        "summary": f"Plan {plan_call_count}",
+                        "steps": [{"description": "Step", "command": "echo ok"}],
+                    }
                 )
             elif "plan validation agent" in system_msg:
                 # First validation fails, second passes
                 if plan_call_count == 1:
-                    return SimpleNamespace(content=plan_invalid)
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                    return plan_invalid
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -983,9 +889,12 @@ class TestRunShellPipeline:
     @pytest.mark.asyncio
     async def test_empty_plan_yields_error(self, tmp_path):
         plan_json = json.dumps({"summary": "Empty", "steps": []})
-        llm = _fake_llm(plan_json)
 
-        with mock.patch("axono.shell.get_llm", return_value=llm):
+        with mock.patch(
+            "axono.shell.stream_response",
+            new_callable=mock.AsyncMock,
+            return_value=plan_json,
+        ):
             events = []
             async for ev in run_shell_pipeline("task", str(tmp_path)):
                 events.append(ev)
@@ -997,7 +906,9 @@ class TestRunShellPipeline:
 
     @pytest.mark.asyncio
     async def test_planning_exception(self, tmp_path):
-        with mock.patch("axono.shell.get_llm", side_effect=RuntimeError("LLM down")):
+        with mock.patch(
+            "axono.shell.stream_response", side_effect=RuntimeError("LLM down")
+        ):
             events = []
             async for ev in run_shell_pipeline("task", str(tmp_path)):
                 events.append(ev)
@@ -1018,22 +929,17 @@ class TestRunShellPipeline:
         )
         exec_valid = json.dumps({"ok": True, "issues": [], "summary": "Done"})
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
                 raise RuntimeError("Validation LLM down")
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -1059,22 +965,17 @@ class TestRunShellPipeline:
         )
         exec_valid = json.dumps({"ok": True, "issues": [], "summary": "Done"})
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_invalid)  # Always invalid
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                return plan_invalid  # Always invalid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -1103,22 +1004,17 @@ class TestRunShellPipeline:
         )
         exec_valid = json.dumps({"ok": True, "issues": [], "summary": "Done"})
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -1145,22 +1041,17 @@ class TestRunShellPipeline:
             {"ok": False, "issues": ["Failed"], "summary": "Task failed"}
         )
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -1188,22 +1079,17 @@ class TestRunShellPipeline:
         )
         exec_valid = json.dumps({"ok": True, "issues": [], "summary": "Done"})
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
-                return SimpleNamespace(content=exec_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
+                return exec_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 events = []
                 async for ev in run_shell_pipeline("navigate", str(tmp_path)):
                     events.append(ev)
@@ -1225,22 +1111,17 @@ class TestRunShellPipeline:
             {"valid": True, "issues": [], "suggestions": [], "summary": "OK"}
         )
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            elif "task validation agent" in system_msg:
+                return plan_valid
+            elif "shell task validation agent" in system_msg:
                 raise RuntimeError("Validation failed")
-            else:
-                return SimpleNamespace(content='{"valid": true}')
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.judge_command", return_value={"dangerous": False}
                 ):
@@ -1266,20 +1147,15 @@ class TestRunShellPipeline:
             {"valid": True, "issues": [], "suggestions": [], "summary": "OK"}
         )
 
-        async def fake_ainvoke(messages):
+        async def fake_stream(messages, model_type="instruction"):
             system_msg = messages[0].content
             if "shell planning agent" in system_msg:
-                return SimpleNamespace(content=plan_json)
+                return plan_json
             elif "plan validation agent" in system_msg:
-                return SimpleNamespace(content=plan_valid)
-            else:
-                return SimpleNamespace(content='{"valid": true}')
+                return plan_valid
 
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
+        with mock.patch("axono.shell.stream_response", side_effect=fake_stream):
+            with mock.patch("axono.pipeline.stream_response", side_effect=fake_stream):
                 with mock.patch(
                     "axono.shell.execute_shell",
                     side_effect=RuntimeError("Execution crashed"),
@@ -1298,27 +1174,140 @@ class TestRunShellPipeline:
     @pytest.mark.asyncio
     async def test_plan_shell_exception(self, tmp_path):
         """When plan_shell raises exception, yields error and returns early."""
-
-        async def fake_ainvoke(messages):
-            # Will never be called since we mock plan_shell
-            return SimpleNamespace(content='{"done": true}')
-
-        fake_llm = mock.AsyncMock()
-        fake_llm.ainvoke = fake_ainvoke
-
-        with mock.patch("axono.shell.get_llm", return_value=fake_llm):
-            with mock.patch("axono.pipeline.get_llm", return_value=fake_llm):
-                # Mock plan_shell to raise an exception
-                with mock.patch(
-                    "axono.shell.plan_shell",
-                    side_effect=RuntimeError("Plan failed"),
-                ):
-                    events = []
-                    async for ev in run_shell_pipeline("task", str(tmp_path)):
-                        events.append(ev)
+        with mock.patch(
+            "axono.shell.plan_shell",
+            side_effect=RuntimeError("Plan failed"),
+        ):
+            events = []
+            async for ev in run_shell_pipeline("task", str(tmp_path)):
+                events.append(ev)
 
         types = [e[0] for e in events]
         assert "error" in types
         assert "cwd" in types  # Should always yield cwd at the end
         error_msgs = [e[1] for e in events if e[0] == "error"]
         assert any("Planning failed" in msg for msg in error_msgs)
+
+
+# ---------------------------------------------------------------------------
+# Workspace restrictions in shell pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestShellWorkspaceRestrictions:
+    """Tests for workspace boundary enforcement in shell module."""
+
+    @pytest.mark.asyncio
+    async def test_run_command_blocks_path_outside_workspace(self, tmp_path):
+        """_run_command should block commands with paths outside workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        result = await _run_command("cat /etc/passwd", str(workspace))
+
+        assert result.blocked is True
+        assert "outside the workspace boundary" in result.block_reason
+
+    @pytest.mark.asyncio
+    async def test_run_command_allows_path_within_workspace(self, tmp_path):
+        """_run_command should allow commands within workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "test.txt").write_text("hello")
+        set_workspace_root(str(workspace))
+
+        with mock.patch("axono.shell.judge_command") as mock_judge:
+
+            async def safe_judge(cmd):
+                return {"dangerous": False, "reason": "ok"}
+
+            mock_judge.side_effect = safe_judge
+            result = await _run_command("cat test.txt", str(workspace))
+
+        assert result.blocked is False
+
+    @pytest.mark.asyncio
+    async def test_execute_shell_cd_outside_workspace_blocked(self, tmp_path):
+        """execute_shell should block cd commands that escape workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        plan = Plan(
+            summary="test",
+            steps=[PlanStep(description="Go to root", action={"command": "cd /tmp"})],
+            raw="{}",
+        )
+
+        result, final_cwd = await execute_shell(plan, str(workspace))
+
+        assert result.success is False
+        assert any("BLOCKED" in (sr.error or "") for sr in result.step_results)
+        # CWD should remain unchanged
+        assert final_cwd == str(workspace)
+
+    @pytest.mark.asyncio
+    async def test_execute_shell_cd_parent_escape_blocked(self, tmp_path):
+        """execute_shell should block cd .. that escapes workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        plan = Plan(
+            summary="test",
+            steps=[PlanStep(description="Go up", action={"command": "cd .."})],
+            raw="{}",
+        )
+
+        result, final_cwd = await execute_shell(plan, str(workspace))
+
+        assert result.success is False
+        assert any("BLOCKED" in (sr.error or "") for sr in result.step_results)
+
+    @pytest.mark.asyncio
+    async def test_execute_shell_cd_within_workspace_allowed(self, tmp_path):
+        """execute_shell should allow cd within workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        subdir = workspace / "subdir"
+        subdir.mkdir(parents=True)
+        set_workspace_root(str(workspace))
+
+        plan = Plan(
+            summary="test",
+            steps=[
+                PlanStep(description="Go to subdir", action={"command": "cd subdir"})
+            ],
+            raw="{}",
+        )
+
+        result, final_cwd = await execute_shell(plan, str(workspace))
+
+        assert result.success is True
+        assert final_cwd == str(subdir)
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_allows_all(self, tmp_path):
+        """Without workspace set, all paths should be allowed."""
+        # No workspace is set (cleared by autouse fixture)
+
+        with mock.patch("axono.shell.judge_command") as mock_judge:
+
+            async def safe_judge(cmd):
+                return {"dangerous": False, "reason": "ok"}
+
+            mock_judge.side_effect = safe_judge
+            result = await _run_command("cat /etc/hostname", str(tmp_path))
+
+        # Should not be blocked by workspace (may succeed or fail based on file existence)
+        assert result.blocked is False

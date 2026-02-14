@@ -30,6 +30,16 @@ def _restore_cwd():
     agent._CURRENT_DIR = original
 
 
+@pytest.fixture(autouse=True)
+def _reset_workspace():
+    """Reset workspace root after every test."""
+    from axono.workspace import clear_workspace_root
+
+    clear_workspace_root()
+    yield
+    clear_workspace_root()
+
+
 def _safe_verdict(dangerous=False, reason="ok"):
     """Return a coroutine that resolves to a safety verdict dict."""
 
@@ -494,6 +504,21 @@ class TestBuildAgent:
         assert "weather" in statuses[0]
 
     @pytest.mark.asyncio
+    async def test_build_agent_sets_workspace_root(self):
+        """build_agent sets _CURRENT_DIR from get_workspace_root (line 314)."""
+        with mock.patch(
+            "axono.agent.get_workspace_root", return_value="/custom/workspace"
+        ):
+            with mock.patch("axono.agent.init_chat_model"):
+                with mock.patch("axono.agent._load_mcp_tools", return_value=[]):
+                    with mock.patch("axono.agent.create_agent", return_value=object()):
+                        await agent.build_agent()
+
+        assert agent._CURRENT_DIR == "/custom/workspace"
+        # Reset
+        agent._CURRENT_DIR = os.getcwd()
+
+    @pytest.mark.asyncio
     async def test_build_agent_no_callback_when_no_mcp(self):
         statuses = []
 
@@ -569,7 +594,7 @@ class TestRunTaskStep:
 
         ai_msg = AIMessage(content="Done")
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"model": {"messages": [ai_msg]}}
 
         graph = mock.AsyncMock()
@@ -584,6 +609,32 @@ class TestRunTaskStep:
         assert any(e[0] == "assistant" and "Done" in e[1] for e in events)
 
     @pytest.mark.asyncio
+    async def test_includes_project_type_in_prompt(self):
+        """project_type is included in task_prompt when detected (line 386)."""
+        from langchain_core.messages import AIMessage
+
+        ai_msg = AIMessage(content="Done")
+        captured_inputs = {}
+
+        async def fake_stream(inputs, stream_mode=None, config=None):
+            captured_inputs.update(inputs)
+            yield {"model": {"messages": [ai_msg]}}
+
+        graph = mock.AsyncMock()
+        graph.astream = fake_stream
+
+        with mock.patch(
+            "axono.agent._get_dir_context", return_value=("file1.py", "python")
+        ):
+            events = []
+            async for ev in agent._run_task_step(graph, [], "Create file", "/tmp"):
+                events.append(ev)
+
+        # The task prompt (last message) should include the project type
+        last_msg = captured_inputs["messages"][-1]
+        assert "python" in last_msg.content
+
+    @pytest.mark.asyncio
     async def test_yields_tool_calls(self):
         from langchain_core.messages import AIMessage
 
@@ -592,7 +643,7 @@ class TestRunTaskStep:
             tool_calls=[{"name": "bash", "args": {"command": "touch file"}, "id": "1"}],
         )
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"model": {"messages": [ai_msg]}}
 
         graph = mock.AsyncMock()
@@ -606,7 +657,7 @@ class TestRunTaskStep:
 
     @pytest.mark.asyncio
     async def test_yields_error_on_exception(self):
-        async def failing_stream(inputs, stream_mode=None):
+        async def failing_stream(inputs, stream_mode=None, config=None):
             raise ValueError("agent boom")
             yield  # noqa: unreachable
 
@@ -626,7 +677,7 @@ class TestRunTaskStep:
 
         tool_msg = ToolMessage(content="file created", tool_call_id="1")
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"tools": {"messages": [tool_msg]}}
 
         graph = mock.AsyncMock()
@@ -667,9 +718,7 @@ class TestRunAgent:
 
         with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
             # Patch at the source since it's imported inside the function
-            with mock.patch(
-                "langchain.chat_models.init_chat_model"
-            ) as mock_init:
+            with mock.patch("langchain.chat_models.init_chat_model") as mock_init:
                 mock_llm = mock.AsyncMock()
                 mock_llm.ainvoke.return_value = mock_llm_response
                 mock_init.return_value = mock_llm
@@ -700,7 +749,7 @@ class TestRunAgent:
 
         ai_msg = AIMessage(content="Done")
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"model": {"messages": [ai_msg]}}
 
         with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
@@ -738,7 +787,7 @@ class TestRunAgent:
 
         ai_msg = AIMessage(content="Fallback response")
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"model": {"messages": [ai_msg]}}
 
         with mock.patch("axono.agent.analyze_intent", return_value=mock_intent):
@@ -789,9 +838,7 @@ class TestRunAgent:
             return mock_intent
 
         with mock.patch("axono.agent.analyze_intent", side_effect=capture_intent):
-            with mock.patch(
-                "langchain.chat_models.init_chat_model"
-            ) as mock_init:
+            with mock.patch("langchain.chat_models.init_chat_model") as mock_init:
                 mock_llm = mock.AsyncMock()
                 mock_llm.ainvoke.return_value = AIMessage(content="Hi")
                 mock_init.return_value = mock_llm
@@ -819,7 +866,7 @@ class TestRunAgent:
 
         call_count = [0]
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ValueError("Task 1 failed")
@@ -856,9 +903,7 @@ class TestRunAgent:
         with mock.patch(
             "axono.agent.analyze_intent", return_value=mock_intent
         ) as mock_analyze:
-            with mock.patch(
-                "langchain.chat_models.init_chat_model"
-            ) as mock_init:
+            with mock.patch("langchain.chat_models.init_chat_model") as mock_init:
                 from langchain_core.messages import AIMessage
 
                 mock_llm = mock.AsyncMock()
@@ -891,7 +936,7 @@ class TestRunAgent:
         )
         tool_msg = ToolMessage(content="file1.txt", tool_call_id="1")
 
-        async def fake_stream(inputs, stream_mode=None):
+        async def fake_stream(inputs, stream_mode=None, config=None):
             yield {"model": {"messages": [ai_msg]}}
             yield {"tools": {"messages": [tool_msg]}}
 
@@ -921,7 +966,7 @@ class TestRunAgent:
             reasoning="Something",
         )
 
-        async def failing_stream(inputs, stream_mode=None):
+        async def failing_stream(inputs, stream_mode=None, config=None):
             raise RuntimeError("Agent crashed")
             yield  # noqa: unreachable
 
@@ -939,3 +984,286 @@ class TestRunAgent:
         assert any(e[0] == "error" and "no tasks" in e[1].lower() for e in events)
         # Should also yield the exception error
         assert any(e[0] == "error" and "Agent crashed" in e[1] for e in events)
+
+
+# ---------------------------------------------------------------------------
+# bash tool — workspace restrictions
+# ---------------------------------------------------------------------------
+
+
+class TestBashWorkspaceRestrictions:
+    """The bash tool should respect workspace boundaries."""
+
+    @pytest.mark.asyncio
+    async def test_command_outside_workspace_blocked(self, tmp_path):
+        """Commands with paths outside workspace should be blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            result = await agent.bash.ainvoke({"command": "cat /etc/passwd"})
+
+        assert "BLOCKED" in result
+        assert "outside the workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_cd_outside_workspace_blocked(self, tmp_path):
+        """CD to directory outside workspace should be blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            result = await agent.bash.ainvoke({"command": "cd /tmp"})
+
+        assert "BLOCKED" in result
+        assert "outside the workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_cd_parent_escaping_workspace_blocked(self, tmp_path):
+        """CD with .. that escapes workspace should be blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            result = await agent.bash.ainvoke({"command": "cd .."})
+
+        assert "BLOCKED" in result
+        # The error message mentions workspace boundary in different ways
+        assert "workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_cd_within_workspace_allowed(self, tmp_path):
+        """CD within workspace should work normally."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        subdir = workspace / "subdir"
+        subdir.mkdir(parents=True)
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            result = await agent.bash.ainvoke({"command": "cd subdir"})
+
+        assert "BLOCKED" not in result
+        assert f"__CWD__:{subdir}" in result
+
+    @pytest.mark.asyncio
+    async def test_command_with_relative_path_within_workspace(self, tmp_path):
+        """Commands with relative paths within workspace should work."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "test.txt").write_text("hello")
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            result = await agent.bash.ainvoke({"command": "cat test.txt"})
+
+        assert "BLOCKED" not in result
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_restriction_when_not_set(self, tmp_path):
+        """When no workspace is set, all paths should be allowed."""
+        # Workspace is not set (cleared by fixture)
+        _reset_cwd(str(tmp_path))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            # This would be blocked if workspace was set
+            result = await agent.bash.ainvoke({"command": "cat /etc/hostname"})
+
+        # Should not be blocked by workspace (may be blocked by safety)
+        assert "outside the workspace boundary" not in result
+
+    @pytest.mark.asyncio
+    async def test_chained_cd_escaping_blocked(self, tmp_path):
+        """Chained commands that result in directory escape should be detected."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            # This command includes a path that escapes
+            result = await agent.bash.ainvoke({"command": "cat ../../../etc/passwd"})
+
+        assert "BLOCKED" in result
+        assert "would escape the workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_pure_cd_validate_cd_target_raises_workspace_violation(
+        self, tmp_path
+    ):
+        """When check_command_paths passes but validate_cd_target raises, cd is blocked."""
+        from axono.workspace import WorkspaceViolationError, set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            with mock.patch("axono.agent.check_command_paths", return_value=None):
+                with mock.patch(
+                    "axono.agent.validate_cd_target",
+                    side_effect=WorkspaceViolationError("test violation"),
+                ):
+                    result = await agent.bash.ainvoke({"command": "cd somewhere"})
+
+        assert "BLOCKED" in result
+        assert "test violation" in result
+
+    @pytest.mark.asyncio
+    async def test_chained_cd_post_execution_outside_workspace_blocked(self, tmp_path):
+        """Chained cd that ends outside workspace after execution is blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        fake_result = subprocess.CompletedProcess(
+            args="cmd",
+            returncode=0,
+            stdout=f"some output\n{outside}",
+            stderr="",
+        )
+
+        with mock.patch("axono.agent.judge_command", _safe_verdict()):
+            with mock.patch("axono.agent.check_command_paths", return_value=None):
+                with mock.patch("subprocess.run", return_value=fake_result):
+                    result = await agent.bash.ainvoke(
+                        {"command": f"cd {outside} && echo hi"}
+                    )
+
+        assert "BLOCKED" in result
+        assert "outside the workspace boundary" in result
+        # CWD should remain unchanged
+        assert agent._CURRENT_DIR == str(workspace)
+
+
+# ---------------------------------------------------------------------------
+# code and shell tools — workspace validation
+# ---------------------------------------------------------------------------
+
+
+class TestCodeToolWorkspace:
+    """The code tool should validate working_dir against workspace."""
+
+    @pytest.mark.asyncio
+    async def test_working_dir_outside_workspace_blocked(self, tmp_path):
+        """Code tool with working_dir outside workspace should be blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        result = await agent.code.ainvoke(
+            {"task": "create file", "working_dir": "/tmp/other"}
+        )
+
+        assert "BLOCKED" in result
+        assert "outside the workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_working_dir_within_workspace_allowed(self, tmp_path):
+        """Code tool with working_dir inside workspace should work."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        async def fake_pipeline(task, working_dir):
+            yield ("result", f"worked in {working_dir}")
+
+        with mock.patch("axono.agent.run_coding_pipeline", fake_pipeline):
+            result = await agent.code.ainvoke(
+                {"task": "create file", "working_dir": str(workspace)}
+            )
+
+        assert "BLOCKED" not in result
+        assert "worked in" in result
+
+
+class TestShellToolWorkspace:
+    """The shell tool should validate working_dir against workspace."""
+
+    @pytest.mark.asyncio
+    async def test_working_dir_outside_workspace_blocked(self, tmp_path):
+        """Shell tool with working_dir outside workspace should be blocked."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        result = await agent.shell.ainvoke(
+            {"task": "install deps", "working_dir": "/tmp/other"}
+        )
+
+        assert "BLOCKED" in result
+        assert "outside the workspace boundary" in result
+
+    @pytest.mark.asyncio
+    async def test_working_dir_within_workspace_allowed(self, tmp_path):
+        """Shell tool with working_dir inside workspace should work."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("result", f"worked in {working_dir}")
+
+        with mock.patch("axono.agent.run_shell_pipeline", fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "install deps", "working_dir": str(workspace)}
+            )
+
+        assert "BLOCKED" not in result
+        assert "worked in" in result
+
+    @pytest.mark.asyncio
+    async def test_cwd_update_outside_workspace_warned(self, tmp_path):
+        """Shell tool should warn if pipeline returns cwd outside workspace."""
+        from axono.workspace import set_workspace_root
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        set_workspace_root(str(workspace))
+        _reset_cwd(str(workspace))
+
+        async def fake_pipeline(task, working_dir, unsafe):
+            yield ("result", "done")
+            yield ("cwd", "/tmp/escaped")  # Outside workspace
+
+        with mock.patch("axono.agent.run_shell_pipeline", fake_pipeline):
+            result = await agent.shell.ainvoke(
+                {"task": "install deps", "working_dir": str(workspace)}
+            )
+
+        assert "outside the workspace boundary" in result
+        # CWD should not have changed
+        assert agent._CURRENT_DIR == str(workspace)

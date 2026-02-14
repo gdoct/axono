@@ -295,3 +295,244 @@ class TestHistoryInput:
         assert inp._history == ["first", "new prompt"]
         assert inp._history_index == -1
         assert inp._current_input == ""
+
+
+# ---------------------------------------------------------------------------
+# TaskListMessage
+# ---------------------------------------------------------------------------
+
+
+class TestTaskListMessage:
+    """Tests for TaskListMessage progress tracking widget."""
+
+    def test_init_renders_all_pending(self):
+        """Initial render shows all tasks as pending."""
+        tlm = ui.TaskListMessage(["Task A", "Task B", "Task C"])
+        text = _get_text(tlm)
+        assert "Plan:" in text
+        assert "Task A" in text
+        assert "Task B" in text
+        assert "Task C" in text
+        # All should show pending indicator (○)
+        assert text.count("○") == 3
+
+    def test_start_task_marks_in_progress(self):
+        """start_task marks the task as in progress."""
+        tlm = ui.TaskListMessage(["Task A", "Task B"])
+        tlm.start_task(0)
+        text = _get_text(tlm)
+        # First task should have arrow indicator
+        assert "→" in text
+        # Second task still pending
+        assert "○" in text
+
+    def test_complete_task_marks_completed(self):
+        """complete_task marks the task as completed."""
+        tlm = ui.TaskListMessage(["Task A", "Task B", "Task C"])
+        tlm.start_task(0)
+        tlm.complete_task(0)
+        text = _get_text(tlm)
+        # First task should have checkmark
+        assert "✓" in text
+        # Second task now in progress (current_index moved to 1)
+        # Third task still pending
+        assert "○" in text
+
+    def test_complete_wrong_index_no_change(self):
+        """complete_task with wrong index does nothing."""
+        tlm = ui.TaskListMessage(["Task A", "Task B"])
+        tlm.start_task(0)
+        tlm.complete_task(1)  # Wrong index
+        text = _get_text(tlm)
+        # First task still in progress
+        assert "→" in text
+        # No checkmark yet
+        assert "✓" not in text
+
+    def test_full_progress_sequence(self):
+        """Test a full sequence of starting and completing tasks."""
+        tlm = ui.TaskListMessage(["Task A", "Task B", "Task C"])
+
+        # Start task 0
+        tlm.start_task(0)
+        text = _get_text(tlm)
+        assert text.count("→") == 1
+        assert text.count("○") == 2
+
+        # Complete task 0 - index moves to 1, so task B becomes "in progress"
+        tlm.complete_task(0)
+        text = _get_text(tlm)
+        assert text.count("✓") == 1
+        assert text.count("→") == 1  # Task B now in progress
+        assert text.count("○") == 1  # Task C still pending
+
+        # Start task 1 (already at index 1 from complete_task)
+        tlm.start_task(1)
+        text = _get_text(tlm)
+        assert text.count("✓") == 1
+        assert text.count("→") == 1
+        assert text.count("○") == 1
+
+        # Complete task 1 - index moves to 2, so task C becomes "in progress"
+        tlm.complete_task(1)
+        text = _get_text(tlm)
+        assert text.count("✓") == 2
+        assert text.count("→") == 1  # Task C now in progress
+        assert text.count("○") == 0  # No pending tasks
+
+        # Start and complete task 2
+        tlm.start_task(2)
+        tlm.complete_task(2)
+        text = _get_text(tlm)
+        assert text.count("✓") == 3
+        assert text.count("○") == 0
+
+    def test_escapes_brackets_in_task_names(self):
+        """Task names with brackets are escaped."""
+        tlm = ui.TaskListMessage(["Create [config] file"])
+        text = _get_text(tlm)
+        # Should contain the task text (escaped form)
+        assert "config" in text
+
+
+# ---------------------------------------------------------------------------
+# ScanningPanel
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingPanel:
+    """Tests for ThinkingPanel thinking output widget."""
+
+    def test_init_defaults(self):
+        """ThinkingPanel has expected defaults."""
+        panel = ui.ThinkingPanel()
+        assert panel._frame == 0
+        assert panel._text == ""
+
+    def test_update_thinking(self):
+        """update_thinking changes the thinking text and re-renders."""
+        from unittest.mock import Mock
+
+        panel = ui.ThinkingPanel()
+        panel.update = Mock()
+        panel.update_thinking("Thinking about...")
+        assert panel._text == "Thinking about..."
+        panel.update.assert_called()
+
+    def test_spin_cycles_frames(self):
+        """_spin cycles through spinner frames and updates display."""
+        from unittest.mock import Mock
+
+        panel = ui.ThinkingPanel()
+        panel.update = Mock()
+        panel._spin()
+        assert panel._frame == 1
+        panel.update.assert_called_once()
+        call_text = panel.update.call_args[0][0]
+        assert panel.SPINNER_FRAMES[1] in call_text
+
+    def test_spin_wraps_around(self):
+        """_spin wraps to frame 0 after the last frame."""
+        from unittest.mock import Mock
+
+        panel = ui.ThinkingPanel()
+        panel.update = Mock()
+        panel._frame = len(panel.SPINNER_FRAMES) - 1
+        panel._spin()
+        assert panel._frame == 0
+
+    def test_render_truncates_long_text(self):
+        """_render_thinking truncates to MAX_LINES."""
+        from unittest.mock import Mock
+
+        panel = ui.ThinkingPanel()
+        panel.update = Mock()
+        long_text = "\n".join(f"Line {i}" for i in range(20))
+        panel._text = long_text
+        panel._render_thinking()
+        call_text = panel.update.call_args[0][0]
+        # Should only have MAX_LINES lines of thinking text (plus spinner)
+        # Total newlines should be <= MAX_LINES (body has MAX_LINES lines = MAX_LINES - 1 newlines)
+        body_lines = call_text.strip().split("\n")
+        assert len(body_lines) <= panel.MAX_LINES + 1  # spinner line + body lines
+
+    def test_escapes_brackets(self):
+        """ThinkingPanel escapes markup brackets."""
+        from unittest.mock import Mock
+
+        panel = ui.ThinkingPanel()
+        panel.update = Mock()
+        panel._text = "Thinking about [important] thing"
+        panel._render_thinking()
+        call_text = panel.update.call_args[0][0]
+        assert "important" in call_text
+
+    @pytest.mark.asyncio
+    async def test_on_mount_starts_timer(self):
+        """on_mount starts the animation timer."""
+        from textual.app import App
+
+        class TestApp(App):
+            def compose(self):
+                yield ui.ThinkingPanel(id="think")
+
+        async with TestApp().run_test(size=(80, 24)) as pilot:
+            panel = pilot.app.query_one("#think", ui.ThinkingPanel)
+            assert panel._timer is not None
+
+
+# ---------------------------------------------------------------------------
+# ScanningPanel
+# ---------------------------------------------------------------------------
+
+
+class TestScanningPanel:
+    """Tests for ScanningPanel spinner widget."""
+
+    def test_init_defaults(self):
+        """ScanningPanel has expected defaults."""
+        panel = ui.ScanningPanel()
+        assert panel._frame == 0
+        assert panel._status == "Scanning workspace..."
+
+    def test_update_status(self):
+        """update_status changes the status text."""
+        panel = ui.ScanningPanel()
+        panel.update_status("Scanning workspace (42 files)...")
+        assert panel._status == "Scanning workspace (42 files)..."
+
+    def test_spin_cycles_frames(self):
+        """_spin cycles through spinner frames and updates display."""
+        from unittest.mock import Mock
+
+        panel = ui.ScanningPanel()
+        panel.update = Mock()
+        panel._spin()
+        assert panel._frame == 1
+        panel.update.assert_called_once()
+        call_text = panel.update.call_args[0][0]
+        assert panel.SPINNER_FRAMES[1] in call_text
+        assert "Scanning workspace..." in call_text
+
+    def test_spin_wraps_around(self):
+        """_spin wraps to frame 0 after the last frame."""
+        from unittest.mock import Mock
+
+        panel = ui.ScanningPanel()
+        panel.update = Mock()
+        panel._frame = len(panel.SPINNER_FRAMES) - 1
+        panel._spin()
+        assert panel._frame == 0
+
+    @pytest.mark.asyncio
+    async def test_on_mount_starts_timer(self):
+        """on_mount starts the animation timer."""
+        from textual.app import App
+
+        class TestApp(App):
+            def compose(self):
+                yield ui.ScanningPanel(id="scan")
+
+        async with TestApp().run_test(size=(80, 24)) as pilot:
+            panel = pilot.app.query_one("#scan", ui.ScanningPanel)
+            assert panel._timer is not None

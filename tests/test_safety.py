@@ -63,15 +63,18 @@ class TestGetJudgeLlm:
     def test_passes_config_values(self):
         safety._judge_llm = None
         with mock.patch("axono.safety.init_chat_model", return_value=object()) as m:
-            with mock.patch.multiple(
-                "axono.safety.config",
-                LLM_INSTRUCTION_MODEL="",
-                LLM_MODEL_NAME="test-model",
-                LLM_MODEL_PROVIDER="test-provider",
-                LLM_BASE_URL="http://test:1234",
-                LLM_API_KEY="test-key",
+            with mock.patch.object(
+                safety.config,
+                "get_model_name",
+                return_value="test-model",
             ):
-                safety._get_judge_llm()
+                with mock.patch.multiple(
+                    "axono.safety.config",
+                    LLM_MODEL_PROVIDER="test-provider",
+                    LLM_BASE_URL="http://test:1234",
+                    LLM_API_KEY="test-key",
+                ):
+                    safety._get_judge_llm()
         m.assert_called_once_with(
             model="test-model",
             model_provider="test-provider",

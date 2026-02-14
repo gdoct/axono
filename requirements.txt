@@ -1,5 +1,5 @@
 textual
-langchain==1.2.8
+langchain==1.2.10
 langchain-openai
 langchain-mcp-adapters
 langgraph-checkpoint-sqlite
